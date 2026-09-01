@@ -13,6 +13,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.errors import CoreError
 from app.logging import get_logger
 from app.models_db import Keyword, KeywordSnapshot, SerpSnapshot
+from intelligence.cluster import cluster_keywords
+from intelligence.questions import extract_candidates
+from intelligence.scoring import OpportunityScorer
+from planner.series import build_content_plan
 from providers.models import KeywordMetric, SearchLandscape, SerpObservation, TrendSeries
 from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
 from providers.searchad.client import NaverSearchAdClient
@@ -42,6 +46,7 @@ class AnalyzeService:
         self._searchad = searchad
         self._hub_search = hub_search
         self._hub_trend = hub_trend
+        self._scorer = OpportunityScorer()
 
     def analyze(
         self, keyword: str, *, force_refresh: bool = False, serp: SerpObservation | None = None
@@ -53,7 +58,12 @@ class AnalyzeService:
         landscape = self._collect_landscape(kw, force_refresh, data_status)
         trend = self._collect_trend(kw, force_refresh, data_status)
 
-        snapshot_id, collected_at = self._persist(kw, metric, related, landscape, trend, serp)
+        score = self._scorer.score(kw, metric, landscape, trend, serp)
+        questions = extract_candidates(landscape)
+        clusters = cluster_keywords(related[:RELATED_KEYWORDS_CAP])
+        plan = build_content_plan(kw, metric, related[:RELATED_KEYWORDS_CAP], landscape, trend, questions)
+
+        snapshot_id, collected_at = self._persist(kw, metric, related, landscape, trend, serp, score)
 
         return {
             "keyword": kw,
@@ -65,6 +75,10 @@ class AnalyzeService:
             "landscape": landscape.model_dump(mode="json") if landscape else None,
             "trend": trend.model_dump(mode="json") if trend else None,
             "serp": serp.model_dump(mode="json") if serp else None,
+            "score": score,
+            "questions": questions,
+            "clusters": clusters,
+            "plan": plan,
         }
 
     def _collect_searchad(
@@ -119,6 +133,7 @@ class AnalyzeService:
         landscape: SearchLandscape | None,
         trend: TrendSeries | None,
         serp: SerpObservation | None,
+        score: dict | None = None,
     ) -> tuple[int, str]:
         payload = {
             "metric": metric.model_dump(mode="json") if metric else None,
@@ -132,7 +147,12 @@ class AnalyzeService:
                 row = Keyword(text=kw)
                 session.add(row)
                 session.flush()
-            snapshot = KeywordSnapshot(keyword_id=row.id, payload=payload)
+            snapshot = KeywordSnapshot(
+                keyword_id=row.id,
+                payload=payload,
+                score=score,
+                score_version=score.get("score_version") if score else None,
+            )
             session.add(snapshot)
             if serp is not None:
                 session.add(SerpSnapshot(keyword_id=row.id, payload=serp.model_dump(mode="json")))

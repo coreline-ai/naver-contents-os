@@ -123,6 +123,15 @@ def test_analyze_returns_all_blocks_with_sources(env):
     assert body["trend"]["points"][0]["ratio"] == 100.0
     assert body["snapshot_id"] >= 1
 
+    # Phase 4 blocks: explainable score + 15-piece plan + clusters
+    assert body["score"]["score_version"] == "v1"
+    assert body["score"]["value"] is None or 0 <= body["score"]["value"] <= 100
+    by_name = {c["component"]: c for c in body["score"]["contributions"]}
+    assert by_name["volume"]["status"] == "ok"
+    assert len(body["plan"]) == 15
+    assert all(p["reason"] for p in body["plan"])
+    assert body["clusters"], "related keywords must cluster"
+
 
 def test_second_call_hits_cache_without_external_calls(env):
     client, calls, _ = build_client()
