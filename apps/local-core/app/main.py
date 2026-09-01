@@ -17,6 +17,10 @@ def create_app() -> FastAPI:
     log = get_logger("app")
     settings = get_settings()
 
+    from app.migrate import upgrade_to_head
+
+    upgrade_to_head()
+
     app = FastAPI(title="Naver Content OS - Local Core", version="0.1.0", docs_url=None, redoc_url=None)
     app.add_middleware(
         CORSMiddleware,
