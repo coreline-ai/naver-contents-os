@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = ""
 
+    # OpenAI-compatible endpoint (V2): a local Codex OAuth proxy, Ollama's OpenAI
+    # endpoint, LM Studio, etc. Prompts LEAVE the machine only when the user
+    # explicitly sets LLM_PROVIDER=openai_compat (docs/11).
+    openai_compat_base_url: str = "http://127.0.0.1:8787/v1"
+    openai_compat_api_key: str = ""
+    openai_compat_model: str = ""
+    codex_proxy_autostart: bool = False
+    codex_proxy_cmd: str = "npx -y @thkdog/codex-openai-proxy"
+    codex_auth_file: Path = Path.home() / ".codex" / "auth.json"
+
     local_core_host: str = "127.0.0.1"
     local_core_port: int = 3719
     local_core_token: str = ""
@@ -86,6 +96,11 @@ class Settings(BaseSettings):
             "naver_hub": "set" if self.hub_configured else "missing",
             "naver_searchad": "set" if self.searchad_configured else "missing",
             "llm_provider": self.llm_provider or "missing",
+            "openai_compat": (
+                ("autostart" if self.codex_proxy_autostart else "manual")
+                if self.llm_provider == "openai_compat"
+                else "inactive"
+            ),
             "local_core_token": "set" if (self.local_core_token or TOKEN_FILE.exists()) else "generated-on-start",
         }
 

@@ -61,6 +61,14 @@ NAVER_SEARCHAD_CUSTOMER_ID=
 
 LLM_PROVIDER=local
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=
+
+# V2: OpenAI 호환 엔드포인트 (Codex OAuth 프록시 등, LLM_PROVIDER=openai_compat 일 때)
+OPENAI_COMPAT_BASE_URL=http://127.0.0.1:8787/v1
+OPENAI_COMPAT_API_KEY=
+OPENAI_COMPAT_MODEL=
+CODEX_PROXY_AUTOSTART=false
+CODEX_PROXY_CMD=npx -y @thkdog/codex-openai-proxy
 
 LOCAL_CORE_HOST=127.0.0.1
 LOCAL_CORE_PORT=3719
@@ -104,6 +112,10 @@ Local Core: 127.0.0.1:3719
 6. API 응답 fixture를 저장하기 전 URL·블로그 ID 등 개인정보성 필드 검토.
 7. `.env`, DB, 스크린샷, 사용자 콘텐츠를 원격 분석 서비스로 자동 전송하지 않음.
 8. SmartEditor는 임시저장까지만 자동화하고 공개 발행은 사용자 확인 후 수행.
+9. 초안 프롬프트(키워드·질문·플랜 제목)의 외부 전송은 사용자가 `LLM_PROVIDER=openai_compat`를
+   명시적으로 설정한 경우에만 발생. 기본값 `local`(Ollama)은 기기 밖으로 아무것도 보내지 않음.
+10. `~/.codex/auth.json`은 존재 여부만 점검하고 내용을 읽거나 로그·DB에 남기지 않음.
+    Codex OAuth 프록시는 반드시 `127.0.0.1` bind로만 사용.
 
 ## 브라우저 준비
 

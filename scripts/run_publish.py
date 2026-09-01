@@ -25,8 +25,8 @@ sys.path.insert(0, str(ROOT / "python"))
 from app import deps  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.services.drafts import DraftService, SqlJobStore  # noqa: E402
-from providers.llm.ollama import OllamaProvider  # noqa: E402
 from providers.llm.base import LLMError  # noqa: E402
+from providers.llm.factory import build_llm_provider  # noqa: E402
 from publisher.browser import attached_page  # noqa: E402
 from publisher.editor import SmartEditorAdapter  # noqa: E402
 from publisher.jobs import PublishJobRunner  # noqa: E402
@@ -61,8 +61,13 @@ def main() -> int:
     print(f"플랜 항목: [{plan_item['blog_type']}] {plan_item['title']}")
 
     llm = None
-    if not args.no_llm and settings.llm_provider == "local":
-        llm = OllamaProvider(settings.ollama_base_url, settings.ollama_model)
+    if not args.no_llm:
+        # LLM_PROVIDER=local(Ollama) | openai_compat(Codex OAuth 프록시 등)
+        try:
+            llm = build_llm_provider(settings)
+        except LLMError as exc:
+            print(f"LLM 준비 실패: {exc}")
+            return 1
     questions = [q["text"] for q in analysis.get("questions", []) if q["kind"] == "question"]
 
     drafts = DraftService(deps.get_session_factory(), llm)

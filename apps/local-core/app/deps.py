@@ -11,7 +11,8 @@ from app.stores import SqlCacheStore, SqlUsageStore
 from providers.gateway import Gateway, ProviderPolicy
 from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
 from providers.searchad.client import NaverSearchAdClient
-from providers.llm.ollama import OllamaProvider
+from providers.llm.base import LLMError
+from providers.llm.factory import build_llm_provider
 
 
 @lru_cache
@@ -71,11 +72,12 @@ def get_draft_service(use_llm: bool = False) -> DraftService:
     settings = get_settings()
     llm = None
     if use_llm:
-        if settings.llm_provider != "local":
-            raise errors.LLMUnavailableError(
-                f"unsupported LLM provider: {settings.llm_provider}", provider="llm"
-            )
-        llm = OllamaProvider(settings.ollama_base_url, settings.ollama_model)
+        # local -> Ollama, openai_compat -> Codex OAuth proxy 등 OpenAI 호환 엔드포인트.
+        # 미지원 값·프록시 자동 기동 실패는 표준 llm_unavailable 오류로 변환된다.
+        try:
+            llm = build_llm_provider(settings)
+        except LLMError as exc:
+            raise errors.LLMUnavailableError(str(exc), provider="llm") from exc
     return DraftService(get_session_factory(), llm)
 
 
