@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -61,12 +62,23 @@ class Settings(BaseSettings):
             return self.local_core_token
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         if TOKEN_FILE.exists():
+            TOKEN_FILE.chmod(0o600)
             stored = TOKEN_FILE.read_text(encoding="utf-8").strip()
             if stored:
                 return stored
         token = secrets.token_urlsafe(32)
-        TOKEN_FILE.write_text(token + "\n", encoding="utf-8")
-        return token
+        try:
+            fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token + "\n")
+            return token
+        except FileExistsError:
+            # Another startup worker won the creation race.
+            TOKEN_FILE.chmod(0o600)
+            stored = TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if not stored:
+                raise RuntimeError("local core token file exists but is empty")
+            return stored
 
     def status_summary(self) -> dict[str, str]:
         """Configuration state without values: safe to log and to return from /health."""

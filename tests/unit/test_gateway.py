@@ -21,11 +21,12 @@ def test_cache_hit_skips_second_send(policy):
     gateway = make_gateway()
     send, calls = make_sender([httpx.Response(200, text='{"a":1}')])
 
-    body1, cached1 = gateway.request(policy=policy, key="k", ttl_seconds=60, send=send)
-    body2, cached2 = gateway.request(policy=policy, key="k", ttl_seconds=60, send=send)
+    first = gateway.request(policy=policy, key="k", ttl_seconds=60, send=send)
+    second = gateway.request(policy=policy, key="k", ttl_seconds=60, send=send)
 
-    assert (body1, cached1) == ('{"a":1}', False)
-    assert (body2, cached2) == ('{"a":1}', True)
+    assert (first.body, first.from_cache) == ('{"a":1}', False)
+    assert (second.body, second.from_cache) == ('{"a":1}', True)
+    assert second.collected_at == first.collected_at
     assert calls["count"] == 1
 
 
@@ -42,8 +43,8 @@ def test_429_backs_off_then_succeeds(policy):
     send, calls = make_sender(
         [httpx.Response(429), httpx.Response(429), httpx.Response(200, text="ok")]
     )
-    body, _ = gateway.request(policy=policy, key="k", ttl_seconds=60, send=send)
-    assert body == "ok"
+    result = gateway.request(policy=policy, key="k", ttl_seconds=60, send=send)
+    assert result.body == "ok"
     assert calls["count"] == 3
     assert len(gateway.recorded_sleeps) == 2
     assert gateway.recorded_sleeps[1] > gateway.recorded_sleeps[0]  # exponential
@@ -96,3 +97,23 @@ def test_cache_key_is_deterministic_and_distinct():
     c = cache_key("p", "GET", "/x", {"q": "다른", "n": 1}, None)
     assert a == b
     assert a != c
+
+
+def test_transport_error_is_mapped_and_lock_is_released(policy):
+    gateway = make_gateway()
+    request = httpx.Request("GET", "https://example.invalid")
+
+    def send():
+        raise httpx.ConnectTimeout("timeout", request=request)
+
+    with pytest.raises(errors.UpstreamUnavailableError):
+        gateway.request(policy=policy, key="transport", ttl_seconds=60, send=send)
+    assert gateway._locks == {}
+
+
+def test_unique_request_locks_do_not_accumulate(policy):
+    gateway = make_gateway()
+    send, _ = make_sender([httpx.Response(200, text="ok")])
+    for index in range(100):
+        gateway.request(policy=policy, key=f"unique-{index}", ttl_seconds=60, send=send)
+    assert gateway._locks == {}

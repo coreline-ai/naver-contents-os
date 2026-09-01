@@ -9,13 +9,14 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models_db import ApiCache, ApiUsage
+from providers.gateway import CacheEntry
 
 
 class SqlCacheStore:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._sessions = session_factory
 
-    def get(self, key: str) -> str | None:
+    def get(self, key: str) -> CacheEntry | None:
         now = datetime.now(timezone.utc)
         with self._sessions() as session:
             row = session.get(ApiCache, key)
@@ -28,10 +29,20 @@ class SqlCacheStore:
                 session.delete(row)
                 session.commit()
                 return None
-            return row.body
+            collected_at = row.created_at
+            if collected_at.tzinfo is None:
+                collected_at = collected_at.replace(tzinfo=timezone.utc)
+            return CacheEntry(body=row.body, collected_at=collected_at)
 
-    def put(self, key: str, provider: str, body: str, ttl_seconds: int) -> None:
-        now = datetime.now(timezone.utc)
+    def put(
+        self,
+        key: str,
+        provider: str,
+        body: str,
+        ttl_seconds: int,
+        collected_at: datetime,
+    ) -> None:
+        now = collected_at
         with self._sessions() as session:
             statement = (
                 sqlite_insert(ApiCache)

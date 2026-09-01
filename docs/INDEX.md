@@ -10,6 +10,8 @@
 - 공식 API·비용·계정 준비: [10. API 및 계정 준비](./10_api_and_account_setup.md)
 - 현재 PC 준비 상태와 보안: [11. 로컬 환경 및 보안 준비](./11_local_environment_and_security.md)
 - 즉시 개발 순서: [13. 개발 착수 체크리스트](./13_development_kickoff_checklist.md)
+- 실제 구현 품질과 잔여 위험: [14. 구현 사항 전문가 상세 분석](./14_implementation_expert_review.md)
+- 설치·실행·검증 빠른 시작: [프로젝트 README](../README.md)
 
 ## 전체 문서
 
@@ -26,6 +28,7 @@
 - [11. 로컬 개발 환경·보안 준비](./11_local_environment_and_security.md)
 - [12. API 계약·캐시·스모크 테스트](./12_api_contracts_and_smoke_tests.md)
 - [13. 바로 개발하기 위한 착수 체크리스트](./13_development_kickoff_checklist.md)
+- [14. 구현 사항 전문가 상세 분석](./14_implementation_expert_review.md)
 
 ## 문서 해석 기준
 

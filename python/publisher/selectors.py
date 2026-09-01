@@ -48,14 +48,18 @@ SMARTEDITOR_SELECTORS: dict[str, list[str]] = {
         ".save_area button.save_btn",
         "button[data-click-area='tpb.save']",
     ],
+    "draft_save_success": [
+        "text=임시저장되었습니다",
+        "text=저장되었습니다",
+        "[class*='save_complete']",
+        "[class*='saveStatus']",
+    ],
 }
 
-# name -> selector key: the 7 gates of docs/05. "login" is URL-based, not a selector.
+# Passive gates. Tag input is checked actively after opening the publish layer.
 HEALTH_CHECKS: tuple[tuple[str, str], ...] = (
     ("editor_entry", "editor_root"),
     ("title_area", "title"),
     ("body_area", "body"),
-    ("image_button", "image_button"),
-    ("tag_input_reachable", "publish_open_button"),  # tag UI lives behind the publish layer
     ("draft_save_button", "draft_save_button"),
 )

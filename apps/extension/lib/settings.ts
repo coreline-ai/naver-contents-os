@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { browser } from 'wxt/browser';
 
 export interface Settings {
   coreUrl: string;
@@ -18,12 +19,12 @@ export const useSettings = create<SettingsState>((set, get) => ({
   ...DEFAULTS,
   loaded: false,
   load: async () => {
-    const stored = await chrome.storage.local.get(STORAGE_KEY);
+    const stored = await browser.storage.local.get(STORAGE_KEY);
     set({ ...DEFAULTS, ...(stored[STORAGE_KEY] ?? {}), loaded: true });
   },
   save: async (patch) => {
     const next = { coreUrl: get().coreUrl, token: get().token, ...patch };
-    await chrome.storage.local.set({ [STORAGE_KEY]: next });
+    await browser.storage.local.set({ [STORAGE_KEY]: next });
     set(next);
   },
 }));

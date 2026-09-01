@@ -38,8 +38,13 @@ class SmartEditorAdapter:
     def _delay_ms(self) -> int:
         return int(30 + self._rng() * 90)  # 30~120ms per char, human-ish
 
-    def _require(self, key: str, stage: str) -> str:
-        selector = pick_selector(self._page, self._selectors[key])
+    def _require(self, key: str, stage: str, *, editable: bool = False) -> str:
+        selector = pick_selector(
+            self._page,
+            self._selectors[key],
+            require_enabled=not editable,
+            require_editable=editable,
+        )
         if selector is None:
             raise EditorError(stage, f"no candidate selector matched: {key}")
         return selector
@@ -57,12 +62,12 @@ class SmartEditorAdapter:
                 pass
 
     def input_title(self, title: str) -> None:
-        selector = self._require("title", "input_title")
+        selector = self._require("title", "input_title", editable=True)
         self._page.type_text(selector, clean_markdown(title), self._delay_ms())
         self._sleep(0.2 + self._rng() * 0.3)
 
     def input_body(self, body: str) -> None:
-        selector = self._require("body", "input_body")
+        selector = self._require("body", "input_body", editable=True)
         text = clean_markdown(body)
         for paragraph in text.split("\n"):
             if paragraph.strip():
@@ -76,7 +81,7 @@ class SmartEditorAdapter:
         # tag UI lives on the publish layer; opening it does NOT publish
         self._page.click(self._require("publish_open_button", "input_tags"))
         self._sleep(0.4)
-        selector = self._require("tag_input", "input_tags")
+        selector = self._require("tag_input", "input_tags", editable=True)
         for tag in tags[:10]:
             self._page.type_text(selector, tag.strip().replace(" ", ""), self._delay_ms())
             self._page.press("Enter")
@@ -84,15 +89,21 @@ class SmartEditorAdapter:
         self._page.press("Escape")
 
     def save_draft(self) -> None:
-        try:
+        def click_and_confirm() -> bool:
             self._page.click(self._require("draft_save_button", "draft_save"))
-            return
+            return self._page.wait_for_any(self._selectors["draft_save_success"], 5_000) is not None
+
+        try:
+            if click_and_confirm():
+                return
         except (EditorError, LookupError, RuntimeError):
             pass
-        # fallback: clear layers/focus, re-find, retry once (docs/05 fallback 체계)
+        # fallback: clear layers/focus, re-find, retry once.
         self._page.press("Escape")
         self._sleep(0.5)
-        selector = pick_selector(self._page, self._selectors["draft_save_button"])
-        if selector is None:
-            raise EditorError("draft_save", "draft save button unreachable after fallback")
-        self._page.click(selector)
+        try:
+            if click_and_confirm():
+                return
+        except (EditorError, LookupError, RuntimeError) as exc:
+            raise EditorError("draft_save", "draft save retry failed") from exc
+        raise EditorError("draft_save", "draft save success signal not observed")

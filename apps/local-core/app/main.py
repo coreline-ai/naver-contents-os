@@ -16,6 +16,7 @@ def create_app() -> FastAPI:
     configure_logging()
     log = get_logger("app")
     settings = get_settings()
+    settings.resolve_token()  # Create the pairing token before the extension first connects.
 
     from app.migrate import upgrade_to_head
 

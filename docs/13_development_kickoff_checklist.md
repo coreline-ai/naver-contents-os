@@ -4,30 +4,30 @@
 
 | 영역 | 상태 | 설명 |
 |---|---:|---|
-| 제품 방향 | 준비됨 | V1 범위와 데이터 소스가 명확함 |
-| API HUB 키 | 부분 준비 | `.env`에 존재하지만 호출 미검증 |
-| SearchAd 키 | 미준비 | 3개 값 발급·설정 필요 |
-| Node 프런트 환경 | 준비됨 | Node 24 LTS, pnpm 설치됨 |
-| Python 백엔드 환경 | 부분 준비 | `uv`는 있으나 Python 3.12 환경 없음 |
-| 브라우저 | 부분 준비 | Chrome 있음, Whale 없음 |
-| 저장소 | 미준비 | Git·패키지·코드 스캐폴드 없음 |
-| 테스트 | 미준비 | API/DOM fixture와 smoke test 없음 |
+| 제품 방향 | 구현 중 | 분석→plan→초안 API/UI까지 연결됨 |
+| API HUB 키 | 검증 완료 | Blog·Trend 라이브 smoke 통과 |
+| SearchAd 키 | 검증 완료 | 3개 값 설정, `/keywordstool` 라이브 smoke 통과 |
+| Node 프런트 환경 | 준비됨 | Node 24, pnpm workspace, WXT build/typecheck 통과 |
+| Python 백엔드 환경 | 준비됨 | Python 3.12, uv lock, Alembic migration 준비됨 |
+| 브라우저 | 부분 준비 | Chrome extension 구현, SmartEditor 실환경 검증 대기 |
+| 저장소 | 준비됨 | Git `main`, FastAPI/WXT/Provider/DB 코드 구현됨 |
+| 테스트 | 준비됨 | Python 91 + smoke 3 + Extension 10 테스트 통과 |
 
-**결론:** 설계 문서는 개발 가능한 수준이지만, 코드 구현은 아직 시작 전입니다. 아래 P0를 끝내면 첫 API 클라이언트 개발에 바로 들어갈 수 있습니다.
+**결론:** 개발 착수 단계는 완료됐고 분석·초안 MVP가 구현됐다. 남은 핵심 게이트는 Extension 실브라우저 확인과 사용자 승인 후 SmartEditor 임시저장 인수 테스트다.
 
 ## P0 — 개발 시작 전 필수
 
-- [ ] Git 저장소 초기화 및 기본 브랜치 생성
-- [ ] Python 3.12 설치, `uv` 가상환경 생성
-- [ ] pnpm workspace와 WXT/FastAPI 스캐폴드 생성
-- [ ] `.env.example` 작성, `.env` 제외 규칙 재확인
-- [ ] `.gitignore`에 `.venv/`, Python cache, SQLite runtime DB 추가
-- [ ] API HUB 콘솔에서 선택 API 목록 확인
+- [x] Git 저장소 초기화 및 기본 브랜치 생성
+- [x] Python 3.12 설치, `uv` 가상환경 생성
+- [x] pnpm workspace와 WXT/FastAPI 스캐폴드 생성
+- [x] `.env.example` 작성, `.env` 제외 규칙 재확인
+- [x] `.gitignore`에 `.venv/`, Python cache, SQLite runtime DB 추가
+- [x] API HUB 선택 API를 라이브 호출로 확인
 - [ ] API HUB 일·월 한도 및 통보 대상 설정
-- [ ] SearchAd 광고주센터 가입·API License 생성
-- [ ] SearchAd 3개 환경변수 설정
-- [ ] API HUB Blog/Trend 스모크 테스트 성공
-- [ ] SearchAd `/keywordstool` 스모크 테스트 성공
+- [x] SearchAd 광고주센터 가입·API License 생성
+- [x] SearchAd 3개 환경변수 설정
+- [x] API HUB Blog/Trend 스모크 테스트 성공
+- [x] SearchAd `/keywordstool` 스모크 테스트 성공
 
 ## 권장 프로젝트 뼈대
 
@@ -115,7 +115,7 @@ naver-content-os/
 2. LLM Provider 인터페이스와 Local provider
 3. 초안 버전 관리
 4. SmartEditor Selector Health Check
-5. 제목·본문·이미지·태그 입력
+5. 제목·본문·태그 입력 — 이미지 업로드는 후속 범위
 6. 임시저장과 실패 로그
 
 ### 완료 기준
@@ -123,7 +123,7 @@ naver-content-os/
 - Health Check 실패 시 입력 시작 금지
 - 기존 네이버 로그인 세션만 사용
 - 네이버 ID·비밀번호 저장 없음
-- 자동 공개 없이 임시저장까지만 성공
+- 자동 공개 없이 임시저장까지만 성공 — 코드 게이트 완료, 실블로그 인수 테스트 대기
 
 ## V1 범위에서 제외
 
@@ -154,10 +154,10 @@ naver-content-os/
 다음 네 항목이 모두 `YES`면 Phase 1 구현을 시작할 수 있습니다.
 
 ```text
-API HUB Blog 호출 성공?       YES / NO
-API HUB Trend 호출 성공?      YES / NO
-SearchAd keywordstool 성공?   YES / NO
-Python 3.12 환경 생성?        YES / NO
+API HUB Blog 호출 성공?       YES
+API HUB Trend 호출 성공?      YES
+SearchAd keywordstool 성공?   YES
+Python 3.12 환경 생성?        YES
 ```
 
-현재 확인된 상태는 API HUB 환경변수만 존재하고 실제 호출은 하지 않은 상태이므로, 위 네 항목은 아직 모두 검증 전으로 취급합니다.
+네 항목은 2026-09-01 라이브 smoke와 로컬 런타임 점검으로 모두 검증됐다. 현재 안정화 작업은 [14. 구현 사항 전문가 상세 분석](./14_implementation_expert_review.md)과 `dev-plan/implement_20260901_222039.md`를 기준으로 한다.

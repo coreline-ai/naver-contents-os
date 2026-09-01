@@ -26,6 +26,7 @@ from app import deps  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.services.drafts import DraftService, SqlJobStore  # noqa: E402
 from providers.llm.ollama import OllamaProvider  # noqa: E402
+from providers.llm.base import LLMError  # noqa: E402
 from publisher.browser import attached_page  # noqa: E402
 from publisher.editor import SmartEditorAdapter  # noqa: E402
 from publisher.jobs import PublishJobRunner  # noqa: E402
@@ -34,7 +35,7 @@ from publisher.jobs import PublishJobRunner  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--keyword", required=True)
-    parser.add_argument("--order", type=int, default=1, help="15편 플랜에서 사용할 항목 순번")
+    parser.add_argument("--order", type=int, default=None, help="15편 플랜 순번 (생략 시 첫 생성 가능 항목)")
     parser.add_argument("--blog-id", required=True)
     parser.add_argument("--tags", default="", help="쉼표 구분")
     parser.add_argument("--no-llm", action="store_true", help="LLM 없이 템플릿 스켈레톤으로 초안 생성")
@@ -44,9 +45,18 @@ def main() -> int:
 
     settings = get_settings()
     analysis = deps.get_analyze_service().analyze(args.keyword)
-    plan_item = next((p for p in analysis["plan"] if p["order"] == args.order), None)
+    if args.order is None:
+        plan_item = next(
+            (p for p in analysis["plan"] if p.get("generation_status") == "ready"), None
+        )
+    else:
+        plan_item = next((p for p in analysis["plan"] if p["order"] == args.order), None)
     if plan_item is None:
-        print(f"플랜에 순번 {args.order} 항목이 없습니다 (1~{len(analysis['plan'])})")
+        requested = args.order if args.order is not None else "생성 가능"
+        print(f"플랜에 {requested} 항목이 없습니다 (1~{len(analysis['plan'])})")
+        return 2
+    if not args.no_llm and plan_item.get("generation_status") != "ready":
+        print(f"[{plan_item['blog_type']}] 유형은 현재 LLM 생성 미지원입니다. --no-llm 또는 다른 순번을 사용하세요.")
         return 2
     print(f"플랜 항목: [{plan_item['blog_type']}] {plan_item['title']}")
 
@@ -56,7 +66,13 @@ def main() -> int:
     questions = [q["text"] for q in analysis.get("questions", []) if q["kind"] == "question"]
 
     drafts = DraftService(deps.get_session_factory(), llm)
-    draft = drafts.create_draft(analysis["keyword"], plan_item, questions)
+    try:
+        draft = drafts.create_draft(
+            analysis["keyword"], plan_item, questions, snapshot_id=analysis["snapshot_id"]
+        )
+    except LLMError as exc:
+        print(f"LLM 생성 실패: {exc}")
+        return 1
     print(f"초안 생성: draft_id={draft['draft_id']} v{draft['version']} 제목='{draft['title']}' "
           f"본문 {len(draft['body'])}자")
 

@@ -34,6 +34,10 @@ class OllamaProvider:
         self._model = models[0]["name"]
         return self._model
 
+    @property
+    def model_name(self) -> str:
+        return self._model
+
     def generate(self, prompt: str, *, system: str = "") -> str:
         model = self.resolve_model()
         messages = []

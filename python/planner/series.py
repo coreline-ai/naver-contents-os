@@ -8,6 +8,7 @@ keyword, blog type, angle, and a data-backed reason. LLM writing happens later
 from __future__ import annotations
 
 from intelligence.keyword.models import compact
+from planner.templates import is_active
 from planner.types import BlogType
 from providers.models import KeywordMetric, SearchLandscape, TrendSeries
 
@@ -78,6 +79,7 @@ def build_content_plan(
                 "target_keyword": target,
                 "angle": angle,
                 "reason": reason,
+                "generation_status": "ready" if is_active(blog_type) else "structure_only",
             }
         )
 

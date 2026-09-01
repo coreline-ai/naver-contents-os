@@ -28,6 +28,7 @@ def now_utc() -> datetime:
 class SourcedModel(BaseModel):
     source: DataSource
     collected_at: datetime = Field(default_factory=now_utc)
+    from_cache: bool = False
     raw_schema_version: str = RAW_SCHEMA_VERSION
 
 
@@ -68,6 +69,8 @@ class SearchChannelResult(BaseModel):
     channel: str  # blog | cafe | kin | web | news
     total: int | None = None
     items: list[SearchItem] = Field(default_factory=list)
+    collected_at: datetime = Field(default_factory=now_utc)
+    from_cache: bool = False
 
 
 class SearchLandscape(SourcedModel):

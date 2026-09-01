@@ -8,6 +8,8 @@
   "scripts": {
     "dev:ext": "pnpm --filter extension dev",
     "build:ext": "pnpm --filter extension build",
-    "test:ext": "pnpm --filter extension test"
+    "test:ext": "pnpm --filter extension test",
+    "typecheck": "pnpm --filter extension typecheck",
+    "verify": "./scripts/verify_all.sh"
   }
 }

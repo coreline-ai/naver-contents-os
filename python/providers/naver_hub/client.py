@@ -10,6 +10,7 @@ import datetime as dt
 import json
 
 import httpx
+from pydantic import ValidationError
 
 from providers.gateway import Gateway, ProviderPolicy, cache_key
 from providers.models import (
@@ -18,7 +19,6 @@ from providers.models import (
     SearchLandscape,
     TrendPoint,
     TrendSeries,
-    now_utc,
 )
 
 BASE_URL = "https://naverapihub.apigw.ntruss.com"
@@ -54,6 +54,16 @@ def _parse_items(raw_items: list[dict]) -> list[SearchItem]:
     return items
 
 
+def _load_object(gateway: Gateway, policy: ProviderPolicy, body: str) -> dict:
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise gateway.invalid_schema(policy, "upstream returned invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise gateway.invalid_schema(policy, "upstream JSON root must be an object")
+    return data
+
+
 class NaverHubSearchClient:
     def __init__(
         self,
@@ -79,26 +89,34 @@ class NaverHubSearchClient:
         path = CHANNEL_PATHS[channel]
         params = {"query": query, "display": display, "start": start}
         key = cache_key("naver_hub_search", "GET", path, params, None)
-        body, _ = self._gateway.request(
+        result = self._gateway.request(
             policy=self._policy,
             key=key,
             ttl_seconds=HUB_SEARCH_TTL,
             send=lambda: self._http.get(path, params=params),
             force_refresh=force_refresh,
         )
-        data = json.loads(body)
-        return SearchChannelResult(
-            channel=channel,
-            total=data.get("total"),
-            items=_parse_items(data.get("items", [])),
-        )
+        data = _load_object(self._gateway, self._policy, result.body)
+        if not isinstance(data.get("items", []), list):
+            raise self._gateway.invalid_schema(self._policy, "search.items must be a list")
+        try:
+            return SearchChannelResult(
+                channel=channel,
+                total=data.get("total"),
+                items=_parse_items(data.get("items", [])),
+                collected_at=result.collected_at,
+                from_cache=result.from_cache,
+            )
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise self._gateway.invalid_schema(self._policy, "invalid search response schema") from exc
 
     def landscape(self, keyword: str, *, force_refresh: bool = False) -> SearchLandscape:
         """5-channel competition landscape for one keyword."""
         results = {ch: self.search(ch, keyword, force_refresh=force_refresh) for ch in CHANNEL_PATHS}
         return SearchLandscape(
             keyword=keyword,
-            collected_at=now_utc(),
+            collected_at=min(r.collected_at for r in results.values()),
+            from_cache=all(r.from_cache for r in results.values()),
             blog_total=results["blog"].total,
             cafe_total=results["cafe"].total,
             kin_total=results["kin"].total,
@@ -146,23 +164,33 @@ class NaverHubTrendClient:
             "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
         }
         key = cache_key("naver_hub_trend", "POST", "/search-trend/v1/search", None, payload)
-        body, _ = self._gateway.request(
+        result = self._gateway.request(
             policy=self._policy,
             key=key,
             ttl_seconds=HUB_TREND_TTL,
             send=lambda: self._http.post("/search-trend/v1/search", json=payload),
             force_refresh=force_refresh,
         )
-        data = json.loads(body)
+        data = _load_object(self._gateway, self._policy, result.body)
         results = data.get("results", [])
-        points = [
-            TrendPoint(period=p.get("period", ""), ratio=float(p.get("ratio", 0.0)))
-            for p in (results[0].get("data", []) if results else [])
-        ]
-        return TrendSeries(
-            keyword_group=keyword,
-            keywords=[keyword],
-            time_unit=time_unit,
-            points=points,
-            collected_at=now_utc(),
-        )
+        if not isinstance(results, list):
+            raise self._gateway.invalid_schema(self._policy, "trend.results must be a list")
+        raw_points = results[0].get("data", []) if results and isinstance(results[0], dict) else []
+        if not isinstance(raw_points, list):
+            raise self._gateway.invalid_schema(self._policy, "trend data must be a list")
+        try:
+            points = [
+                TrendPoint(period=p.get("period", ""), ratio=float(p["ratio"]))
+                for p in raw_points
+                if isinstance(p, dict)
+            ]
+            return TrendSeries(
+                keyword_group=keyword,
+                keywords=[keyword],
+                time_unit=time_unit,
+                points=points,
+                collected_at=result.collected_at,
+                from_cache=result.from_cache,
+            )
+        except (ValidationError, KeyError, TypeError, ValueError) as exc:
+            raise self._gateway.invalid_schema(self._policy, "invalid trend response schema") from exc

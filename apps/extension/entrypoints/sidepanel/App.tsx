@@ -1,8 +1,15 @@
-import type { AnalyzeResponse, SerpObservation } from '@ncos/contracts';
+import type {
+  AnalyzeResponse,
+  DraftCreateResponse,
+  DraftGenerationMode,
+  PlanItem,
+  SerpObservation,
+} from '@ncos/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { CoreClient, CoreError } from '~/lib/core';
-import { MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
+import { MSG_GET_BLOG, MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
+import type { BlogParse } from '~/lib/parsers/blog';
 import type { SerpParse } from '~/lib/parsers/serp';
 import { useSettings } from '~/lib/settings';
 
@@ -22,6 +29,8 @@ export default function App() {
   const [serp, setSerp] = useState<SerpObservation | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
+  const [draft, setDraft] = useState<DraftCreateResponse | null>(null);
+  const [blogInspection, setBlogInspection] = useState<BlogParse | null>(null);
 
   useEffect(() => {
     void settings.load();
@@ -44,6 +53,25 @@ export default function App() {
 
   const analyze = useMutation<AnalyzeResponse, CoreError, { keyword: string; force?: boolean }>({
     mutationFn: ({ keyword: kw, force }) => client.analyze(kw, serp, force ?? false),
+    onSuccess: () => setDraft(null),
+  });
+
+  const createDraft = useMutation<
+    DraftCreateResponse,
+    CoreError,
+    { planItem: PlanItem; mode: DraftGenerationMode }
+  >({
+    mutationFn: ({ planItem, mode }) => {
+      if (!analyze.data) throw new CoreError(0, 'missing_analysis', '분석 결과가 없습니다');
+      return client.createDraft({
+        keyword: analyze.data.keyword,
+        snapshot_id: analyze.data.snapshot_id,
+        plan_item: planItem,
+        questions: analyze.data.questions.filter((q) => q.kind === 'question').map((q) => q.text),
+        generation_mode: mode,
+      });
+    },
+    onSuccess: setDraft,
   });
 
   async function pullCurrentSearch() {
@@ -64,6 +92,11 @@ export default function App() {
     } else {
       setSerp(null);
     }
+  }
+
+  async function inspectCurrentBlog() {
+    const parsed = await requestActiveTab<BlogParse>({ type: MSG_GET_BLOG });
+    setBlogInspection(parsed?.found ? parsed : null);
   }
 
   const connected = handshake.isSuccess;
@@ -115,7 +148,10 @@ export default function App() {
         <div className="flex gap-2">
           <input
             value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
+            onChange={(e) => {
+              setKeyword(e.target.value);
+              setSerp(null);
+            }}
             onKeyDown={(e) => e.key === 'Enter' && keyword && analyze.mutate({ keyword })}
             placeholder="키워드 입력"
             className="w-full rounded border border-slate-300 px-2 py-1.5"
@@ -131,6 +167,9 @@ export default function App() {
         <div className="mt-2 flex items-center gap-2 text-xs">
           <button className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-100" onClick={() => void pullCurrentSearch()}>
             현재 검색어 가져오기
+          </button>
+          <button className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-100" onClick={() => void inspectCurrentBlog()}>
+            현재 블로그 분석
           </button>
           {serp && <span className="text-emerald-700">SERP {serp.results.length}건 첨부됨</span>}
           {result && (
@@ -153,10 +192,21 @@ export default function App() {
         <>
           <ScoreCard result={result} />
           <LandscapeCard result={result} />
-          <PlanCard result={result} />
+          <PlanCard
+            plan={result.plan}
+            creating={createDraft.isPending}
+            onCreate={(planItem, mode) => createDraft.mutate({ planItem, mode })}
+          />
           <QuestionsCard result={result} />
+          {createDraft.isError && (
+            <p className="mt-3 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">
+              초안 오류({createDraft.error.code}): {createDraft.error.message}
+            </p>
+          )}
+          {draft && <DraftCard draft={draft} />}
         </>
       )}
+      {blogInspection && <BlogInspectionCard inspection={blogInspection} />}
     </div>
   );
 }
@@ -224,13 +274,21 @@ function LandscapeCard({ result }: { result: AnalyzeResponse }) {
   );
 }
 
-function PlanCard({ result }: { result: AnalyzeResponse }) {
-  if (result.plan.length === 0) return null;
+export function PlanCard({
+  plan,
+  creating,
+  onCreate,
+}: {
+  plan: PlanItem[];
+  creating: boolean;
+  onCreate: (item: PlanItem, mode: DraftGenerationMode) => void;
+}) {
+  if (plan.length === 0) return null;
   return (
     <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
       <h2 className="font-semibold">15편 콘텐츠 플랜</h2>
       <ol className="mt-2 space-y-1.5">
-        {result.plan.map((p) => (
+        {plan.map((p) => (
           <li key={p.order} className="rounded border border-slate-100 p-2">
             <div className="flex items-center gap-1.5">
               <span className="text-xs tabular-nums text-slate-400">{p.order}.</span>
@@ -240,9 +298,61 @@ function PlanCard({ result }: { result: AnalyzeResponse }) {
               <span className="truncate text-xs font-medium">{p.title}</span>
             </div>
             <p className="mt-0.5 pl-5 text-[11px] text-slate-500">{p.reason}</p>
+            <div className="mt-1 flex justify-end gap-1">
+              <button
+                className="rounded border border-slate-300 px-2 py-0.5 text-[10px] disabled:opacity-40"
+                disabled={creating}
+                onClick={() => onCreate(p, 'skeleton')}
+              >
+                구조 초안
+              </button>
+              <button
+                className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
+                disabled={creating || p.generation_status !== 'ready'}
+                title={p.generation_status === 'ready' ? 'Ollama로 초안 생성' : '현재 LLM 생성 미지원 유형'}
+                onClick={() => onCreate(p, 'llm')}
+              >
+                AI 초안
+              </button>
+            </div>
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+export function DraftCard({ draft }: { draft: DraftCreateResponse }) {
+  return (
+    <section className="mt-3 rounded-lg border border-emerald-200 bg-white p-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">생성된 초안 v{draft.version}</h2>
+        <span className="text-[10px] text-slate-400">
+          {draft.provider}{draft.model ? ` · ${draft.model}` : ''}
+        </span>
+      </div>
+      <h3 className="mt-2 text-sm font-medium">{draft.title}</h3>
+      <p className="mt-1 text-[11px] text-slate-400">본문 {draft.body.length.toLocaleString()}자 · draft #{draft.draft_id}</p>
+      <div className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs leading-5">
+        {draft.body}
+      </div>
+    </section>
+  );
+}
+
+export function BlogInspectionCard({ inspection }: { inspection: BlogParse }) {
+  return (
+    <section className="mt-3 rounded-lg border border-sky-200 bg-white p-3">
+      <h2 className="font-semibold">현재 블로그 분석</h2>
+      <p className="mt-1 truncate text-xs font-medium">{inspection.title || '제목 없음'}</p>
+      <div className="mt-2 flex flex-wrap gap-1 text-[11px] text-slate-600">
+        <span>본문 {inspection.body_chars.toLocaleString()}자</span>
+        <span>· 이미지 {inspection.image_count}</span>
+        <span>· 영상 {inspection.video_count}</span>
+        <span>· 링크 {inspection.link_count}</span>
+        <span>· 공감 {inspection.likes ?? '결측'}</span>
+        <span>· 댓글 {inspection.comments ?? '결측'}</span>
+      </div>
     </section>
   );
 }

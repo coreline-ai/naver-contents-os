@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 
 import httpx
+from pydantic import ValidationError
 
 from providers.gateway import Gateway, ProviderPolicy, cache_key
-from providers.models import KeywordMetric, now_utc
+from providers.models import KeywordMetric
 from providers.searchad.signature import auth_headers
 
 BASE_URL = "https://api.searchad.naver.com"
@@ -67,24 +68,35 @@ class NaverSearchAdClient:
             )
             return self._http.get(KEYWORDSTOOL_URI, params=params, headers=headers)
 
-        body, _ = self._gateway.request(
+        result = self._gateway.request(
             policy=self._policy, key=key, ttl_seconds=SEARCHAD_TTL, send=send, force_refresh=force_refresh
         )
-        data = json.loads(body)
-        collected = now_utc()
+        try:
+            data = json.loads(result.body)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise self._gateway.invalid_schema(self._policy, "upstream returned invalid JSON") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("keywordList", []), list):
+            raise self._gateway.invalid_schema(self._policy, "keywordList must be a list")
+        collected = result.collected_at
         metrics = []
         for row in data.get("keywordList", []):
+            if not isinstance(row, dict):
+                raise self._gateway.invalid_schema(self._policy, "keywordList row must be an object")
             pc, pc_masked = _parse_volume(row.get("monthlyPcQcCnt"))
             mobile, mobile_masked = _parse_volume(row.get("monthlyMobileQcCnt"))
-            metrics.append(
-                KeywordMetric(
-                    keyword=row.get("relKeyword", ""),
-                    monthly_pc_searches=pc,
-                    monthly_mobile_searches=mobile,
-                    volume_masked=pc_masked or mobile_masked,
-                    ad_competition=row.get("compIdx"),
-                    ad_click_metrics={f: row.get(f) for f in _CLICK_FIELDS if row.get(f) is not None},
-                    collected_at=collected,
+            try:
+                metrics.append(
+                    KeywordMetric(
+                        keyword=row.get("relKeyword", ""),
+                        monthly_pc_searches=pc,
+                        monthly_mobile_searches=mobile,
+                        volume_masked=pc_masked or mobile_masked,
+                        ad_competition=row.get("compIdx"),
+                        ad_click_metrics={f: row.get(f) for f in _CLICK_FIELDS if row.get(f) is not None},
+                        collected_at=collected,
+                        from_cache=result.from_cache,
+                    )
                 )
-            )
+            except ValidationError as exc:
+                raise self._gateway.invalid_schema(self._policy, "invalid keywordList row schema") from exc
         return metrics

@@ -1,58 +1,67 @@
-# 09. 품질 평가 및 최종 판단
+# 09. 현재 구현 품질 평가
 
-## 영역별 점수(텍스트 기준)
+평가 기준일: **2026-09-01**
+상세 근거: [14. 구현 사항 전문가 상세 분석](./14_implementation_expert_review.md)
 
-| 영역 | 점수 |
-|---|---:|
-| 아이디어 | 9/10 |
-| 전체 워크플로우 | 9/10 |
-| 모듈 분리 | 8/10 |
-| SmartEditor 자동화 | 9/10 |
-| 키워드 분석 | 6.5/10 |
-| 콘텐츠 생성 구조 | 7.5/10 |
-| 이미지 자동화 | 8/10 |
-| 썸네일 | 8.5/10 |
-| 브라우저 안정성 | 6/10 |
-| 최신 네이버 API 대응 | 4/10 |
-| 보안 구조 | 5.5/10 |
-| 테스트/QA | 5/10 |
-| 확장성 | 7/10 |
-| 현재 바로 사용 가능성 | 6.5/10 |
-| 프로젝트 재사용 가치 | 9/10 |
+## 최종 판단
 
-## 핵심 결론
-- 단순 Selenium 매크로가 아니라 **콘텐츠 제작 파이프라인 뼈대**가 꽤 완성도 있게 구성됨.
-- 하지만 그대로 사용보다, 두 프로젝트를 분해·재조립하는 방향이 바람직.
-- 최종 경쟁력은 자동 글작성 능력이 아니라
-  **검색 데이터 안정 수집 + 의사결정 연계(키워드 선정/시리즈 기획/품질 판단)**
-  에 달림.
+현재 프로젝트는 **NAVER 키워드 수집·분석과 초안 생성이 연결된 로컬 개발형 MVP**다.
 
-## 추천 결합 맥락
-`naver-keyword-tool`(키워드 분석) + `naver-blog-automation`(콘텐츠 제작)
-+ 새 모듈(`Opportunity`, `SERP`, `Blog Inspector`, `Series Planner`, `Whale Sidebar`)
-으로 네이버 콘텐츠 운영 OS 수준으로 진화 가능.
+- 데이터 수집·정규화·분석: 실제 사용 가능한 MVP 수준
+- Extension 분석·초안 UI: build/typecheck/test를 통과한 개발 버전
+- SmartEditor: 안전 게이트와 저장 확인 코드 완료, 실블로그 인수 테스트 대기
+- 자동 공개: 의도적으로 미구현
 
-## 추가 대화 재분석 결과
+## 영역별 상태
 
-추가 대화는 기존 저장소 분석에서 부족했던 **계정 발급, API 구분, 최신 API HUB 이관, 비용, 로컬 환경, Secret 분리**를 구체화했다는 점에서 가치가 큼. 다만 문서의 설명과 실제 개발 가능 상태는 구분해야 합니다.
+| 영역 | 상태 | 근거 |
+|---|---|---|
+| API HUB/SearchAd | 검증 완료 | Blog·Trend·keywordstool live smoke 3개 통과 |
+| Provider/Gateway | 구현 완료 | cache provenance, backoff, quota, 오류 표준화 |
+| 데이터 정합성 | 구현 완료 | NFKC/공백, SERP query 일치, exact metric 검증 |
+| DB | 구현 완료 | Alembic 3개 revision, snapshot/draft/job/lineage |
+| Opportunity Score | 실험용 V1 | 설명 가능, coverage/confidence 고도화 필요 |
+| 15편 Planner | 구현 완료 | generation status로 LLM 지원 여부 분리 |
+| Extension | 구현 완료 | typecheck·10 tests·production build 통과 |
+| Draft API | 구현 완료 | create/get/add-version, skeleton/Ollama mode |
+| Blog Inspector | 구현 완료 | 파서와 사이드패널 표시 연결 |
+| SmartEditor | 검증 대기 | health/save signal 단위 테스트, live E2E 미수행 |
+| 이미지 자동화 | 후속 범위 | 현재 텍스트·태그 V1에서 제외 |
+| 운영 배포 | 부분 준비 | README·검증 script 제공, CI/패키징은 후속 |
 
-| 판단 | 결과 |
-|---|---|
-| API HUB 이관 일정 | 공식 공지와 일치 |
-| API HUB 현재 비용 | 2026-09-01 기준 한시적 무료 확인 |
-| 검색 한도 | 일 25,000 + 월 합산 775,000 + Key당 50 RPS를 함께 고려해야 함 |
-| Search Trend | 절대 검색량이 아니라 최대 100 기준 상대 추이 |
-| SearchAd 발급 절차 | 공식 가이드의 광고주센터→API Manager→License 생성과 일치 |
-| SearchAd 실사용 가능 여부 | 키 3개 발급 후 `/keywordstool` 스모크 테스트 필요 |
-| SmartEditor 안정성 | 공식 API 보장이 아니므로 DOM 변경 회귀 테스트 필수 |
+## 품질 강점
 
-현재 프로젝트 디렉터리에는 문서와 일부 환경변수만 있으며 실행 코드가 없습니다. 따라서 **설계 준비도는 높지만 구현 준비도는 아직 P0 단계**입니다.
+1. SearchAd 검색량, API HUB 문서 수·트렌드, Browser DOM을 명시적으로 분리한다.
+2. 결측을 0으로 왜곡하지 않고 score 기여도와 missing을 함께 반환한다.
+3. 캐시 hit에서 원본 수집 시각을 보존한다.
+4. Secret은 Local Core에만 두고 Extension에는 pairing token만 저장한다.
+5. 초안 원본과 수정 version을 덮어쓰지 않고 보존한다.
+6. 미지원 BlogType은 LLM 호출 전에 차단한다.
+7. SmartEditor는 모든 Health gate와 저장 성공 신호가 확인돼야 성공 처리한다.
 
-## 남은 핵심 리스크
+## 남은 핵심 위험
 
-- API HUB 콘솔에서 실제 선택된 API 목록은 로컬 파일만으로 확인 불가.
-- API HUB 인증값은 존재하지만 실제 호출 성공 여부는 미검증.
-- SearchAd 인증값 3종이 아직 `.env`에 없음.
-- Python 프로젝트 버전과 의존성 lock이 없음.
-- SmartEditor·SERP DOM 파서의 실제 fixture와 회귀 테스트가 없음.
-- `localhost` API의 Origin 제한·로컬 인증 토큰 설계가 아직 문서 수준.
+- SmartEditor selector와 저장 성공 문구는 실제 계정 DOM에서 최종 확인해야 한다.
+- Opportunity Score v1은 항상 결측인 구성요소가 있어 keyword 간 비교 confidence가 필요하다.
+- Ollama model이 설치되지 않아 현재 AI 초안은 실행 전 model 설치가 필요하다.
+- API HUB 콘솔의 일·월 한도와 알림 대상 설정은 사용자 콘솔 작업으로 남아 있다.
+- 이미지 upload/focus recovery는 아직 구현하지 않았다.
+- Starlette TestClient deprecation warning을 다음 dependency upgrade 전에 해소해야 한다.
+
+## 최신 검증
+
+```text
+Python unit/integration  91 passed
+NAVER live smoke          3 passed
+Extension test           10 passed
+TypeScript typecheck      PASS
+WXT production build      PASS
+총 자동 검증             104 passed
+```
+
+## 출시 게이트
+
+다음 두 항목 완료 전에는 “SmartEditor 실사용 완료”로 표시하지 않는다.
+
+1. Chrome에 Extension을 load하고 네이버 검색/블로그 화면에서 육안 검증
+2. 사용자 승인 후 테스트 블로그에서 임시저장 반복 성공 및 저장 결과 확인

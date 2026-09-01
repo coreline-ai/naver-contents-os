@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import type { BlogParse } from './parsers/blog';
 import type { SerpParse } from './parsers/serp';
 
@@ -15,10 +16,10 @@ export type SerpReply = SerpParse;
 export type BlogReply = BlogParse;
 
 export async function requestActiveTab<T>(message: ContentMessage): Promise<T | null> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) return null;
   try {
-    return (await chrome.tabs.sendMessage(tab.id, message)) as T;
+    return (await browser.tabs.sendMessage(tab.id, message)) as T;
   } catch {
     return null; // no content script on this page
   }

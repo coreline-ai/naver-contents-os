@@ -44,6 +44,13 @@ class SchemaError(CoreError):
     http_status = 502
 
 
+class UpstreamUnavailableError(CoreError):
+    """DNS, connection, and timeout failures before an HTTP response exists."""
+
+    code = "upstream_unreachable"
+    http_status = 503
+
+
 class RateLimitError(CoreError):
     """Upstream 429 persisted through backoff."""
 
@@ -63,3 +70,10 @@ class UnconfiguredError(CoreError):
 
     code = "unconfigured"
     http_status = 424
+
+
+class LLMUnavailableError(CoreError):
+    """Configured LLM cannot be reached or has no usable model."""
+
+    code = "llm_unavailable"
+    http_status = 503

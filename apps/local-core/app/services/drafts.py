@@ -9,8 +9,8 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models_db import Draft, DraftVersion, Keyword, PublishJob
-from planner.templates import SYSTEM_PROMPT, build_prompt
+from app.models_db import Draft, DraftVersion, Keyword, KeywordSnapshot, PublishJob
+from planner.templates import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt
 from planner.types import BlogType
 from providers.llm.base import LLMProvider
 from publisher.markdown import clean_markdown
@@ -46,7 +46,14 @@ class DraftService:
         self._sessions = session_factory
         self._llm = llm
 
-    def create_draft(self, keyword_text: str, plan_item: dict, questions: list[str] | None = None) -> dict:
+    def create_draft(
+        self,
+        keyword_text: str,
+        plan_item: dict,
+        questions: list[str] | None = None,
+        *,
+        snapshot_id: int | None = None,
+    ) -> dict:
         blog_type = BlogType(plan_item["blog_type"])
         if self._llm is not None:
             # raises for structure-only types: generation is V1-active for HOWTO/POLICY/REVIEW
@@ -63,6 +70,8 @@ class DraftService:
             title, body = plan_item["title"], skeleton_body(blog_type)
         title = clean_markdown(title)
         body = clean_markdown(body)
+        provider_name = self._llm.name if self._llm is not None else "skeleton"
+        model_name = getattr(self._llm, "model_name", "") if self._llm is not None else ""
 
         with self._sessions() as session:
             keyword = session.scalar(select(Keyword).where(Keyword.text == keyword_text))
@@ -70,17 +79,35 @@ class DraftService:
                 keyword = Keyword(text=keyword_text)
                 session.add(keyword)
                 session.flush()
+            if snapshot_id is not None:
+                snapshot = session.get(KeywordSnapshot, snapshot_id)
+                if snapshot is None or snapshot.keyword_id != keyword.id:
+                    raise ValueError("snapshot_id does not belong to keyword")
             draft = Draft(
                 keyword_id=keyword.id,
+                source_snapshot_id=snapshot_id,
                 plan_order=plan_item.get("order"),
+                plan_payload=dict(plan_item),
                 blog_type=blog_type.value,
                 title=title,
+                provider=provider_name,
+                model=model_name,
+                prompt_version=PROMPT_VERSION,
             )
             session.add(draft)
             session.flush()
             session.add(DraftVersion(draft_id=draft.id, version=1, title=title, body=body, note="V1 원본"))
             session.commit()
-            return {"draft_id": draft.id, "version": 1, "title": title, "body": body}
+            return {
+                "draft_id": draft.id,
+                "version": 1,
+                "title": title,
+                "body": body,
+                "source_snapshot_id": snapshot_id,
+                "provider": provider_name,
+                "model": model_name,
+                "prompt_version": PROMPT_VERSION,
+            }
 
     def add_version(self, draft_id: int, title: str, body: str, note: str = "") -> dict:
         with self._sessions() as session:
@@ -121,6 +148,11 @@ class DraftService:
                 "draft_id": draft.id,
                 "blog_type": draft.blog_type,
                 "title": draft.title,
+                "source_snapshot_id": draft.source_snapshot_id,
+                "plan": draft.plan_payload,
+                "provider": draft.provider,
+                "model": draft.model,
+                "prompt_version": draft.prompt_version,
                 "versions": [
                     {"version": v.version, "title": v.title, "body": v.body, "note": v.note}
                     for v in versions

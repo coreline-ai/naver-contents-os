@@ -1,9 +1,13 @@
 """Attach to the user's own running Chrome over CDP — the logged-in session is used
 as-is; no Naver credentials are stored or typed by code (docs/05, docs/11).
 
-Start Chrome once with:
+Start a dedicated automation profile once with:
     /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\
-        --remote-debugging-port=9222
+        --remote-debugging-port=9222 \\
+        --user-data-dir=/path/to/naver-content-os/data/chrome-automation-profile
+
+Chrome 136+ ignores remote debugging against the default profile. Run
+scripts/start_chrome_automation.sh and sign into Naver once in that profile.
 """
 
 from __future__ import annotations

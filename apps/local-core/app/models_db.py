@@ -49,9 +49,16 @@ class Draft(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     keyword_id: Mapped[int] = mapped_column(ForeignKey("keywords.id"), index=True)
+    source_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("keyword_snapshots.id"), nullable=True, index=True
+    )
     plan_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_payload: Mapped[dict] = mapped_column(JSON, default=dict)
     blog_type: Mapped[str] = mapped_column(String(20))
     title: Mapped[str] = mapped_column(String(200))
+    provider: Mapped[str] = mapped_column(String(40), default="skeleton")
+    model: Mapped[str] = mapped_column(String(100), default="")
+    prompt_version: Mapped[str] = mapped_column(String(20), default="v1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

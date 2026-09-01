@@ -1,7 +1,9 @@
 import json
 
 import httpx
+import pytest
 
+from app.errors import SchemaError
 from providers.gateway import ProviderPolicy
 from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
 from tests.conftest import make_gateway
@@ -60,6 +62,28 @@ def test_search_parses_text_plain_json_body():
     assert requests[0].headers["X-NCP-APIGW-API-KEY-ID"] == "id"
 
 
+def test_cache_hit_preserves_original_collection_time():
+    requests: list[httpx.Request] = []
+    client = make_search_client(requests)
+    first = client.search("blog", "테스트")
+    second = client.search("blog", "테스트")
+    assert len(requests) == 1
+    assert first.from_cache is False and second.from_cache is True
+    assert first.collected_at == second.collected_at
+
+
+def test_invalid_json_is_schema_error():
+    client = NaverHubSearchClient(
+        make_gateway(),
+        "id",
+        "secret",
+        search_policy=ProviderPolicy("hub_search_invalid", 1000),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, text="not-json")),
+    )
+    with pytest.raises(SchemaError):
+        client.search("blog", "테스트")
+
+
 def test_landscape_queries_five_channels():
     requests: list[httpx.Request] = []
     client = make_search_client(requests)
@@ -93,3 +117,16 @@ def test_trend_parses_ratio_points():
     series = client.get_search_trend("테스트")
     assert [p.ratio for p in series.points] == [55.2, 100.0]
     assert series.source == "NAVER_API_HUB"
+
+
+def test_trend_missing_ratio_is_schema_error():
+    body = {"results": [{"data": [{"period": "2026-08-01"}]}]}
+    client = NaverHubTrendClient(
+        make_gateway(),
+        "id",
+        "secret",
+        trend_policy=ProviderPolicy("hub_trend_invalid", 1000),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=body)),
+    )
+    with pytest.raises(SchemaError):
+        client.get_search_trend("테스트")

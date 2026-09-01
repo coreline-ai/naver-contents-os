@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 
 def make_engine(db_path: Path | str) -> Engine:
-    if isinstance(db_path, Path):
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    path = Path(db_path) if str(db_path) != ":memory:" else None
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
 
     @event.listens_for(engine, "connect")
@@ -17,6 +18,8 @@ def make_engine(db_path: Path | str) -> Engine:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+        if path is not None and path.exists():
+            path.chmod(0o600)
 
     return engine
 

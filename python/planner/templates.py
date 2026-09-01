@@ -60,6 +60,7 @@ TEMPLATES: dict[BlogType, tuple[TemplateSection, ...]] = {
 }
 
 ACTIVE_TYPES = frozenset({BlogType.HOWTO, BlogType.POLICY, BlogType.REVIEW})
+PROMPT_VERSION = "v1"
 
 SYSTEM_PROMPT = (
     "당신은 네이버 블로그 글을 쓰는 한국어 작가입니다. 과장 없이 구체적으로 쓰고, "

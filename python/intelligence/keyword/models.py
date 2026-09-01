@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from datetime import date, datetime
 
 _TAG_RE = re.compile(r"</?b>|</?strong>", re.IGNORECASE)
@@ -15,9 +16,14 @@ def clean_title(text: str) -> str:
     return _WS_RE.sub(" ", _TAG_RE.sub("", text)).strip()
 
 
+def normalize_keyword(text: str) -> str:
+    """NFKC + collapsed whitespace form used at every keyword input boundary."""
+    return _WS_RE.sub(" ", unicodedata.normalize("NFKC", text)).strip()
+
+
 def compact(text: str) -> str:
     """Space-insensitive, casefolded form for keyword comparison."""
-    return text.replace(" ", "").casefold()
+    return _WS_RE.sub("", unicodedata.normalize("NFKC", text)).casefold()
 
 
 def log1p_norm(value: float | None, reference_max: float) -> float | None:

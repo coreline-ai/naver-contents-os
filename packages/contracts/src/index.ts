@@ -12,6 +12,8 @@ export interface HealthResponse {
 export interface KeywordMetric {
   source: DataSource;
   collected_at: string;
+  from_cache?: boolean;
+  raw_schema_version?: string;
   keyword: string;
   monthly_pc_searches: number | null;
   monthly_mobile_searches: number | null;
@@ -31,6 +33,8 @@ export interface SearchItem {
 export interface SearchLandscape {
   source: DataSource;
   collected_at: string;
+  from_cache?: boolean;
+  raw_schema_version?: string;
   keyword: string;
   blog_total: number | null;
   cafe_total: number | null;
@@ -51,6 +55,8 @@ export interface TrendPoint {
 export interface TrendSeries {
   source: DataSource;
   collected_at: string;
+  from_cache?: boolean;
+  raw_schema_version?: string;
   keyword_group: string;
   keywords: string[];
   time_unit: string;
@@ -92,6 +98,7 @@ export interface PlanItem {
   target_keyword: string;
   angle: string;
   reason: string;
+  generation_status: 'ready' | 'structure_only';
   series_prev: number | null;
   series_next: number | null;
 }
@@ -112,6 +119,46 @@ export interface SerpObservation {
   collected_at: string;
   query: string;
   results: SerpResult[];
+}
+
+export type DraftGenerationMode = 'skeleton' | 'llm';
+
+export interface DraftCreateRequest {
+  keyword: string;
+  snapshot_id: number | null;
+  plan_item: PlanItem;
+  questions: string[];
+  generation_mode: DraftGenerationMode;
+}
+
+export interface DraftCreateResponse {
+  draft_id: number;
+  version: number;
+  title: string;
+  body: string;
+  source_snapshot_id: number | null;
+  provider: string;
+  model: string;
+  prompt_version: string;
+}
+
+export interface DraftVersion {
+  version: number;
+  title: string;
+  body: string;
+  note: string;
+}
+
+export interface DraftDetail {
+  draft_id: number;
+  blog_type: string;
+  title: string;
+  source_snapshot_id: number | null;
+  plan: PlanItem;
+  provider: string;
+  model: string;
+  prompt_version: string;
+  versions: DraftVersion[];
 }
 
 export interface AnalyzeResponse {

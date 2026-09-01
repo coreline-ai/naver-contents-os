@@ -1,7 +1,14 @@
 /** Local Core HTTP client. The token comes from extension storage — API secrets
  * never live in the extension (docs/11 Secret boundary). */
 
-import type { AnalyzeResponse, HealthResponse, SerpObservation } from '@ncos/contracts';
+import type {
+  AnalyzeResponse,
+  DraftCreateRequest,
+  DraftCreateResponse,
+  DraftDetail,
+  HealthResponse,
+  SerpObservation,
+} from '@ncos/contracts';
 
 export class CoreError extends Error {
   constructor(
@@ -36,7 +43,12 @@ export class CoreClient {
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       const code = body?.error?.code ?? body?.detail?.code ?? String(response.status);
-      throw new CoreError(response.status, code, body?.error?.message ?? 'request failed');
+      const validationMessage = Array.isArray(body?.detail) ? body.detail[0]?.msg : undefined;
+      throw new CoreError(
+        response.status,
+        code,
+        body?.error?.message ?? body?.detail?.message ?? validationMessage ?? 'request failed',
+      );
     }
     return (await response.json()) as T;
   }
@@ -53,6 +65,27 @@ export class CoreClient {
     return this.request<AnalyzeResponse>('/v1/keywords/analyze', {
       method: 'POST',
       body: JSON.stringify({ keyword, force_refresh: forceRefresh, serp: serp ?? null }),
+    });
+  }
+
+  createDraft(input: DraftCreateRequest): Promise<DraftCreateResponse> {
+    return this.request<DraftCreateResponse>('/v1/drafts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  getDraft(draftId: number): Promise<DraftDetail> {
+    return this.request<DraftDetail>(`/v1/drafts/${draftId}`);
+  }
+
+  addDraftVersion(
+    draftId: number,
+    input: { title: string; body: string; note?: string },
+  ): Promise<{ draft_id: number; version: number }> {
+    return this.request(`/v1/drafts/${draftId}/versions`, {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   }
 }

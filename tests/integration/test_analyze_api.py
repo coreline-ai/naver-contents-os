@@ -111,6 +111,26 @@ def test_missing_or_wrong_token_is_401(env):
     assert r.status_code == 401
 
 
+def test_whitespace_keyword_and_mismatched_serp_are_422(env):
+    client, _, _ = build_client()
+    assert analyze(client, keyword="   ").status_code == 422
+    response = analyze(
+        client,
+        keyword="테스트키워드",
+        serp={
+            "query": "다른키워드",
+            "results": [],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_nfkc_keyword_is_normalized_at_request_boundary(env):
+    client, _, _ = build_client()
+    body = analyze(client, keyword="  ＡＢＣ　테스트  ").json()
+    assert body["keyword"] == "ABC 테스트"
+
+
 def test_analyze_returns_all_blocks_with_sources(env):
     client, _, _ = build_client()
     body = analyze(client).json()
@@ -158,6 +178,15 @@ def test_upstream_auth_failure_degrades_block_not_request(env):
     assert body["landscape"] is None
     assert body["data_status"]["searchad"] == "ok"  # other sources unaffected
     assert body["metric"] is not None
+
+
+def test_missing_exact_searchad_row_does_not_use_first_related_metric(env):
+    client, _, _ = build_client()
+    body = analyze(client, keyword="정확히없는키워드").json()
+    assert body["metric"] is None
+    assert body["related_keywords"][0]["keyword"] == "테스트키워드"
+    by_name = {c["component"]: c for c in body["score"]["contributions"]}
+    assert by_name["volume"]["status"] == "missing"
 
 
 def test_snapshots_are_persisted(env):

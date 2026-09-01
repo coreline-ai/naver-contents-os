@@ -48,7 +48,36 @@ def run_health_check(
             report.add(name, False, "skipped: not logged in")
         return report
 
+    help_close = pick_selector(page, selectors["help_close"], require_enabled=True)
+    if help_close is not None:
+        try:
+            page.click(help_close)
+        except Exception:  # noqa: BLE001 - popup may close itself
+            pass
+
     for name, key in HEALTH_CHECKS:
-        found = pick_selector(page, selectors[key])
+        found = pick_selector(
+            page,
+            selectors[key],
+            require_enabled=key == "draft_save_button",
+            require_editable=key in {"title", "body"},
+        )
         report.add(name, found is not None, found or f"no candidate matched: {key}")
+
+    publish_button = pick_selector(page, selectors["publish_open_button"], require_enabled=True)
+    if publish_button is None:
+        report.add("tag_input_reachable", False, "publish layer button unavailable")
+    else:
+        try:
+            page.click(publish_button)
+            tag_input = pick_selector(page, selectors["tag_input"], require_editable=True)
+            report.add(
+                "tag_input_reachable",
+                tag_input is not None,
+                tag_input or "tag input unavailable after opening publish layer",
+            )
+        except Exception as exc:  # noqa: BLE001 - converted into a failed health gate
+            report.add("tag_input_reachable", False, f"publish layer check failed: {type(exc).__name__}")
+        finally:
+            page.press("Escape")
     return report

@@ -6,10 +6,12 @@ from app import errors
 from app.config import get_settings
 from app.db import make_engine, make_session_factory
 from app.services.analyze import AnalyzeService
+from app.services.drafts import DraftService
 from app.stores import SqlCacheStore, SqlUsageStore
 from providers.gateway import Gateway, ProviderPolicy
 from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
 from providers.searchad.client import NaverSearchAdClient
+from providers.llm.ollama import OllamaProvider
 
 
 @lru_cache
@@ -27,6 +29,8 @@ def get_gateway() -> Gateway:
         request_error=errors.RequestError,
         rate_limit_error=errors.RateLimitError,
         quota_error=errors.QuotaError,
+        transport_error=errors.UpstreamUnavailableError,
+        schema_error=errors.SchemaError,
         warn_ratio=get_settings().usage_warn_ratio,
     )
 
@@ -62,9 +66,23 @@ def get_analyze_service() -> AnalyzeService:
     return AnalyzeService(get_session_factory(), searchad, hub_search, hub_trend)
 
 
+@lru_cache
+def get_draft_service(use_llm: bool = False) -> DraftService:
+    settings = get_settings()
+    llm = None
+    if use_llm:
+        if settings.llm_provider != "local":
+            raise errors.LLMUnavailableError(
+                f"unsupported LLM provider: {settings.llm_provider}", provider="llm"
+            )
+        llm = OllamaProvider(settings.ollama_base_url, settings.ollama_model)
+    return DraftService(get_session_factory(), llm)
+
+
 def reset_caches() -> None:
     """Test helper: drop every cached singleton (settings included)."""
     get_settings.cache_clear()
     get_session_factory.cache_clear()
     get_gateway.cache_clear()
     get_analyze_service.cache_clear()
+    get_draft_service.cache_clear()

@@ -1,7 +1,9 @@
 import json
 
 import httpx
+import pytest
 
+from app.errors import SchemaError
 from providers.gateway import ProviderPolicy
 from providers.searchad.client import NaverSearchAdClient
 from providers.searchad.signature import build_signature
@@ -79,3 +81,30 @@ def test_volume_parsing_and_masking():
     assert masked.monthly_pc_searches is None
     assert masked.monthly_total_searches is None  # masked stays missing, never zero
     assert masked.volume_masked is True
+
+
+def test_cache_hit_preserves_original_collection_time():
+    requests: list[httpx.Request] = []
+    client = make_client(requests)
+    first = client.get_related_keywords("애드포스트")
+    second = client.get_related_keywords("애드포스트")
+    assert len(requests) == 1
+    assert first[0].from_cache is False and second[0].from_cache is True
+    assert first[0].collected_at == second[0].collected_at
+
+
+def test_invalid_keyword_list_schema_is_mapped():
+    from tests.conftest import make_gateway
+
+    client = NaverSearchAdClient(
+        make_gateway(),
+        "api-key",
+        "secret-key",
+        "12345",
+        policy=ProviderPolicy("searchad_invalid", 1000),
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"keywordList": "not-a-list"})
+        ),
+    )
+    with pytest.raises(SchemaError):
+        client.get_related_keywords("애드포스트")

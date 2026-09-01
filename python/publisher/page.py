@@ -7,6 +7,7 @@ the adapter searches the page first, then every frame.
 
 from __future__ import annotations
 
+import time
 from typing import Protocol
 
 
@@ -15,6 +16,10 @@ class PageLike(Protocol):
     @property
     def url(self) -> str: ...
     def exists(self, selector: str) -> bool: ...
+    def is_visible(self, selector: str) -> bool: ...
+    def is_enabled(self, selector: str) -> bool: ...
+    def is_editable(self, selector: str) -> bool: ...
+    def wait_for_any(self, selectors: list[str], timeout_ms: int) -> str | None: ...
     def click(self, selector: str) -> None: ...
     def type_text(self, selector: str, text: str, delay_ms: int) -> None: ...
     def press(self, key: str) -> None: ...
@@ -46,6 +51,27 @@ class PlaywrightPageAdapter:
     def exists(self, selector: str) -> bool:
         return self._find(selector) is not None
 
+    def is_visible(self, selector: str) -> bool:
+        locator = self._find(selector)
+        return bool(locator is not None and locator.is_visible())
+
+    def is_enabled(self, selector: str) -> bool:
+        locator = self._find(selector)
+        return bool(locator is not None and locator.is_visible() and locator.is_enabled())
+
+    def is_editable(self, selector: str) -> bool:
+        locator = self._find(selector)
+        return bool(locator is not None and locator.is_visible() and locator.is_editable())
+
+    def wait_for_any(self, selectors: list[str], timeout_ms: int) -> str | None:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline:
+            found = pick_selector(self, selectors, require_visible=True)
+            if found is not None:
+                return found
+            time.sleep(0.1)
+        return None
+
     def click(self, selector: str) -> None:
         locator = self._find(selector)
         if locator is None:
@@ -63,8 +89,22 @@ class PlaywrightPageAdapter:
         self._page.keyboard.press(key)
 
 
-def pick_selector(page: PageLike, candidates: list[str]) -> str | None:
+def pick_selector(
+    page: PageLike,
+    candidates: list[str],
+    *,
+    require_visible: bool = True,
+    require_enabled: bool = False,
+    require_editable: bool = False,
+) -> str | None:
     for selector in candidates:
-        if page.exists(selector):
-            return selector
+        if not page.exists(selector):
+            continue
+        if require_visible and not page.is_visible(selector):
+            continue
+        if require_enabled and not page.is_enabled(selector):
+            continue
+        if require_editable and not page.is_editable(selector):
+            continue
+        return selector
     return None

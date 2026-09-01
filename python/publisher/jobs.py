@@ -11,7 +11,7 @@ from publisher.editor import EditorError, SmartEditorAdapter
 from publisher.health import HealthReport
 from publisher.page import PageLike
 
-STAGES = ("health_check", "open_editor", "input_title", "input_body", "input_tags", "draft_save")
+STAGES = ("health_check", "prepare_editor", "input_title", "input_body", "input_tags", "draft_save")
 
 
 class JobStore(Protocol):
@@ -63,7 +63,8 @@ class PublishJobRunner:
         record("health_check", "passed")
 
         steps = (
-            ("open_editor", lambda: adapter.open(blog_id)),
+            # Health already navigated to and validated this exact editor page.
+            ("prepare_editor", adapter.dismiss_popups),
             ("input_title", lambda: adapter.input_title(title)),
             ("input_body", lambda: adapter.input_body(body)),
             ("input_tags", lambda: adapter.input_tags(tags)),

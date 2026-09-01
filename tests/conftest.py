@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from app import errors
-from providers.gateway import Gateway, ProviderPolicy
+from providers.gateway import CacheEntry, Gateway, ProviderPolicy
 
 
 class FakeCache:
     def __init__(self):
-        self.data: dict[str, str] = {}
+        self.data: dict[str, CacheEntry] = {}
 
-    def get(self, key: str) -> str | None:
+    def get(self, key: str) -> CacheEntry | None:
         return self.data.get(key)
 
-    def put(self, key: str, provider: str, body: str, ttl_seconds: int) -> None:
-        self.data[key] = body
+    def put(
+        self, key: str, provider: str, body: str, ttl_seconds: int, collected_at: datetime
+    ) -> None:
+        self.data[key] = CacheEntry(body, collected_at)
 
 
 class FakeUsage:
@@ -41,6 +45,8 @@ def make_gateway(cache=None, usage=None, sleeper=None, **kwargs) -> Gateway:
         request_error=errors.RequestError,
         rate_limit_error=errors.RateLimitError,
         quota_error=errors.QuotaError,
+        transport_error=errors.UpstreamUnavailableError,
+        schema_error=errors.SchemaError,
         sleeper=sleeper if sleeper is not None else sleeps.append,
         rng=lambda: 0.0,
         **kwargs,

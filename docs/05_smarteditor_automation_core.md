@@ -1,5 +1,14 @@
 # 05. SmartEditor 자동화 핵심 자산과 리스크
 
+## 현재 구현 범위 업데이트
+
+- V1 안정화 범위는 **제목·본문·태그·임시저장**이다. 이미지 업로드는 후속 범위다.
+- Health Check는 selector 존재뿐 아니라 visible/enabled/editable과 실제 tag input 접근성을 검사한다.
+- Health Check와 입력은 동일한 editor navigation에서 이어져 검사 후 DOM 변경 위험을 줄였다.
+- 임시저장 버튼 클릭만으로 성공 처리하지 않고 저장 성공 signal을 확인한다.
+- Chrome 136+는 기본 profile remote debugging을 허용하지 않으므로 `scripts/start_chrome_automation.sh`의 전용 `--user-data-dir` profile을 사용한다.
+- 실제 블로그 임시저장 인수 테스트는 사용자 승인 후 수행한다.
+
 ## 1) 강점 요약
 `automation/editor.py`와 `config/selectors.py`가 가장 높은 재사용 가치.
 

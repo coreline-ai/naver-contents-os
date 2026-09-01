@@ -14,6 +14,7 @@ from app.errors import CoreError
 from app.logging import get_logger
 from app.models_db import Keyword, KeywordSnapshot, SerpSnapshot
 from intelligence.cluster import cluster_keywords
+from intelligence.keyword.models import compact, normalize_keyword
 from intelligence.questions import extract_candidates
 from intelligence.scoring import OpportunityScorer
 from planner.series import build_content_plan
@@ -26,12 +27,8 @@ log = get_logger("analyze")
 RELATED_KEYWORDS_CAP = 50
 
 
-def normalize_keyword(text: str) -> str:
-    return " ".join(text.split()).strip()
-
-
 def _same_keyword(a: str, b: str) -> bool:
-    return a.replace(" ", "").casefold() == b.replace(" ", "").casefold()
+    return compact(a) == compact(b)
 
 
 class AnalyzeService:
@@ -94,7 +91,7 @@ class AnalyzeService:
             log.warning("searchad_failed", code=exc.code)
             return None, []
         data_status["searchad"] = "ok"
-        metric = next((r for r in rows if _same_keyword(r.keyword, kw)), rows[0] if rows else None)
+        metric = next((r for r in rows if _same_keyword(r.keyword, kw)), None)
         return metric, rows
 
     def _collect_landscape(

@@ -1,9 +1,15 @@
 from datetime import date
 
+from intelligence.keyword.models import compact, normalize_keyword
 from intelligence.scoring import SCORE_VERSION, OpportunityScorer
 from providers.models import KeywordMetric, SearchItem, SearchLandscape, TrendPoint, TrendSeries
 
 TODAY = date(2026, 9, 1)
+
+
+def test_keyword_normalization_is_nfkc_and_whitespace_insensitive():
+    assert normalize_keyword("  ＡＢＣ　 키워드\t테스트 ") == "ABC 키워드 테스트"
+    assert compact("ＡＢＣ 키워드") == compact("abc키워드")
 
 
 def make_metric(pc=1000, mobile=3000, masked=False):
