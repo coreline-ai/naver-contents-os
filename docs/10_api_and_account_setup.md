@@ -101,7 +101,9 @@ Search Trend는 최대 5개 그룹을 요청할 수 있고 세부 API 문서에�
 | 이미지 | `GET /search/v1/image` | V2 참고 이미지 검색(현재 미사용) |
 | 트렌드 | `POST /search-trend/v1/search` | 상대 관심도 추이 |
 
-`blog`와 `search-trend` 외의 경로는 원본 대화 기준이며 공식 문서 대조 전이므로 `미확인`으로 취급합니다. 초기 스모크 테스트에서 실제 경로와 응답 스키마를 확인한 뒤 이 표를 `확인됨`으로 갱신합니다.
+`확인됨`: 2026-09-01 실 호출 검증 완료 — blog·cafearticle·kin·webkr·news는 200 + `total`/`items` 응답, errata는 200(별도 스키마), search-trend는 200 + `ratio` 응답을 확인했습니다(`scripts/verify_api_hub.py --all`). 이미지 경로만 미호출 상태로 남아 있습니다.
+
+주의: HUB 검색 API는 JSON 본문을 `Content-Type: text/plain;charset=UTF-8`로 반환하므로 클라이언트는 content-type이 아니라 본문 파싱으로 판단해야 합니다.
 
 ## API HUB 비용과 한도
 

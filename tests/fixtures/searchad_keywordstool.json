@@ -1,0 +1,15 @@
+{
+  "keywordList": [
+    {
+      "relKeyword": "애드포스트",
+      "monthlyPcQcCnt": 10,
+      "monthlyMobileQcCnt": "< 10",
+      "monthlyAvePcClkCnt": 0.0,
+      "monthlyAveMobileClkCnt": 0.0,
+      "monthlyAvePcCtr": 0.0,
+      "monthlyAveMobileCtr": 0.0,
+      "plAvgDepth": 0,
+      "compIdx": "낮음"
+    }
+  ]
+}
