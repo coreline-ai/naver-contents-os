@@ -44,6 +44,46 @@ class SerpSnapshot(Base):
     payload: Mapped[dict] = mapped_column(JSON)
 
 
+class Draft(Base):
+    __tablename__ = "drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("keywords.id"), index=True)
+    plan_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    blog_type: Mapped[str] = mapped_column(String(20))
+    title: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class DraftVersion(Base):
+    """V1 원본 → V2 사실확인 → V3 제목 수정 → V4 최종 (docs/07 draft_versions)."""
+
+    __tablename__ = "draft_versions"
+    __table_args__ = (UniqueConstraint("draft_id", "version", name="uq_draft_versions_draft_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class PublishJob(Base):
+    __tablename__ = "publish_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    stage: Mapped[str] = mapped_column(String(30), default="")
+    error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class ApiCache(Base):
     __tablename__ = "api_cache"
 
