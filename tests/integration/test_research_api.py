@@ -16,6 +16,15 @@ class FakeResearchService:
     def preflight(self, keyword, **_kwargs):
         return {"keyword": keyword, "correction": None, "sensitive": False}
 
+    def suggest(self, query, **_kwargs):
+        return {"query": query, "suggestions": [], "status": "ok"}
+
+    def rising(self, **kwargs):
+        return {**kwargs, "run_id": 1, "candidates": []}
+
+    def latest_rising(self, **kwargs):
+        return {"run": {**kwargs, "run_id": 1}}
+
     def graph(self, keyword, **_kwargs):
         return {"keyword": keyword, "nodes": [], "edges": [], "status": "ok"}
 
@@ -80,3 +89,27 @@ def test_watchlist_and_snapshot_http_semantics(client):
     assert client.delete("/v1/watchlist/2", headers=headers()).status_code == 404
     assert client.get("/v1/snapshots/2", headers=headers()).status_code == 200
     assert client.get("/v1/snapshots/404", headers=headers()).status_code == 404
+
+
+def test_suggestion_and_rising_routes_validate_mode_boundaries(client):
+    assert client.post(
+        "/v1/keywords/suggest", json={"query": "가", "limit": 8}, headers=headers()
+    ).status_code == 422
+    valid = client.post(
+        "/v1/keywords/suggest", json={"query": "러닝화", "limit": 8}, headers=headers()
+    )
+    assert valid.status_code == 200 and valid.json()["query"] == "러닝화"
+
+    assert client.post(
+        "/v1/research/rising", json={"mode": "general"}, headers=headers()
+    ).status_code == 422
+    assert client.post(
+        "/v1/research/rising", json={"mode": "local", "region": "성수"}, headers=headers()
+    ).status_code == 200
+    assert client.post(
+        "/v1/research/rising", json={"mode": "shopping", "seed": "신발"}, headers=headers()
+    ).status_code == 422
+    latest = client.get(
+        "/v1/research/rising/latest?mode=general&seed=러닝화", headers=headers()
+    )
+    assert latest.status_code == 200 and latest.json()["run"]["run_id"] == 1

@@ -44,7 +44,7 @@ def test_plan_has_exactly_15_items_with_reasons_and_types():
     assert plan[0]["blog_type"] == BlogType.SERIES.value
     assert "월간 검색량 650" in plan[0]["reason"]
     assert "블로그 문서 69,449건" in plan[0]["reason"]
-    assert plan[0]["generation_status"] == "structure_only"
+    assert plan[0]["generation_status"] == "ready"
     assert all(
         p["generation_status"] == ("ready" if p["blog_type"] in {t.value for t in ACTIVE_TYPES} else "structure_only")
         for p in plan

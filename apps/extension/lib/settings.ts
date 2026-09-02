@@ -4,9 +4,14 @@ import { browser } from 'wxt/browser';
 export interface Settings {
   coreUrl: string;
   token: string;
+  allowLlmWhenSensitiveUnknown: boolean;
 }
 
-const DEFAULTS: Settings = { coreUrl: 'http://127.0.0.1:3719', token: '' };
+const DEFAULTS: Settings = {
+  coreUrl: 'http://127.0.0.1:3719',
+  token: '',
+  allowLlmWhenSensitiveUnknown: true,
+};
 const STORAGE_KEY = 'ncos-settings';
 
 interface SettingsState extends Settings {
@@ -23,7 +28,12 @@ export const useSettings = create<SettingsState>((set, get) => ({
     set({ ...DEFAULTS, ...(stored[STORAGE_KEY] ?? {}), loaded: true });
   },
   save: async (patch) => {
-    const next = { coreUrl: get().coreUrl, token: get().token, ...patch };
+    const next = {
+      coreUrl: get().coreUrl,
+      token: get().token,
+      allowLlmWhenSensitiveUnknown: get().allowLlmWhenSensitiveUnknown,
+      ...patch,
+    };
     await browser.storage.local.set({ [STORAGE_KEY]: next });
     set(next);
   },

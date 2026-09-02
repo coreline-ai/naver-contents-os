@@ -5,6 +5,7 @@ import {
   BlogInspectionCard,
   ClusterCard,
   LandscapeCard,
+  KeywordDiscoveryCard,
   PlanCard,
   RelatedKeywordsCard,
   ScoreCard,
@@ -109,6 +110,14 @@ const evidence: AnalyzeResponse = {
 };
 
 describe('sidepanel result cards', () => {
+  it('places a compact related-keyword top area with immediate selection', () => {
+    const html = renderToStaticMarkup(<KeywordDiscoveryCard result={evidence} tab="related" onTab={vi.fn()} risingMode="general" onRisingMode={vi.fn()} region="" onRegion={vi.fn()} category="" onCategory={vi.fn()} rising={null} pending={false} error="" onCollect={vi.fn()} onSelect={vi.fn()} />);
+    expect(html).toContain('상단 키워드 탐색');
+    expect(html).toContain('연관 키워드');
+    expect(html).toContain('급상승 키워드');
+    expect(html).toContain('누르면 즉시 재분석');
+    expect(html).toContain('초보 러닝화');
+  });
   it('disables AI draft for structure-only plan items', () => {
     const html = renderToStaticMarkup(<PlanCard plan={plan} creating={false} onCreate={vi.fn()} />);
     expect(html).toContain('현재 LLM 생성 미지원 유형');

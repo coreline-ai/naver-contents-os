@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy.orm import sessionmaker
 
@@ -75,6 +75,18 @@ class FakeHubSearch:
 
     def search_images(self, _keyword, **_kwargs):
         return {"items": [{"title": "사진", "link": "https://image"}], "total": 1}
+
+    def search_news_latest(self, keyword, **_kwargs):
+        return {
+            "items": [{
+                "title": f"{keyword} 최신 뉴스",
+                "link": f"https://news.example/{keyword}",
+                "original_link": f"https://publisher.example/{keyword}",
+                "published_at": "Wed, 02 Sep 2026 12:00:00 +0900",
+            }],
+            "collected_at": "2026-09-02T12:00:00+09:00",
+            "from_cache": False,
+        }
 
 
 class FakeTrend:
@@ -197,3 +209,80 @@ def test_graph_preserves_provider_failure_as_top_level_status(tmp_path):
     graph = service.graph("키워드")
     assert graph["status"] == "request"
     assert len(graph["nodes"]) == 1
+
+
+def _daily_points(previous=10, recent=20):
+    start = date(2026, 8, 20)
+    return [
+        TrendPoint(period=(start + timedelta(days=index)).isoformat(), ratio=previous if index < 7 else recent)
+        for index in range(14)
+    ]
+
+
+class FakeDailyTrend:
+    def __init__(self):
+        self.calls = 0
+
+    def get_search_trends(self, groups, **_kwargs):
+        self.calls += 1
+        return [
+            TrendSeries(keyword_group=name, keywords=keywords, time_unit="date", points=_daily_points())
+            for name, keywords in groups
+        ]
+
+
+class FakeDailyShopping:
+    def __init__(self):
+        self.calls = 0
+
+    def get_keyword_trends(self, _category, keywords, **_kwargs):
+        self.calls += 1
+        return [
+            {
+                "title": keyword,
+                "points": [point.model_dump() for point in _daily_points(5, 15)],
+                "collected_at": "2026-09-02T00:00:00Z",
+                "from_cache": False,
+            }
+            for keyword in keywords
+        ]
+
+
+def test_suggest_and_general_rising_are_capped_explainable_and_persisted(tmp_path):
+    searchad = FakeSearchAd()
+    trend = FakeDailyTrend()
+    service = ResearchService(
+        sessions(tmp_path), searchad, FakeHubSearch(), trend, FakeDailyShopping(),
+        today=lambda: date(2026, 9, 3),
+    )
+
+    suggestions = service.suggest("러닝화", limit=8)
+    assert suggestions["status"] == "ok"
+    assert len(suggestions["suggestions"]) == 8
+    assert suggestions["suggestions"][0]["source"] == "searchad"
+
+    result = service.rising(seed="러닝화", mode="general")
+    assert result["status"] == "ok"
+    assert len(result["candidates"]) == 20
+    assert result["estimated_calls"] == result["actual_calls"] == 10
+    assert trend.calls == 4
+    assert result["candidates"][0]["growth_rate"] == 100
+    assert result["candidates"][0]["freshness_score"] is not None
+    assert result["candidates"][0]["news_7d_sample_count"] == 1
+    assert result["score_version"] == "freshness-v1"
+    assert result["run_id"] is not None
+    latest = service.latest_rising(seed="러닝화", mode="general")
+    assert latest["run"]["run_id"] == result["run_id"]
+
+
+def test_shopping_batches_and_partial_news_does_not_fabricate_score(tmp_path):
+    shopping = FakeDailyShopping()
+    service = ResearchService(
+        sessions(tmp_path), FakeSearchAd(), None, FakeDailyTrend(), shopping,
+        today=lambda: date(2026, 9, 3),
+    )
+    result = service.rising(seed="러닝화", mode="shopping", category="50000000")
+    assert shopping.calls == 4
+    assert result["data_status"]["news"] == "unconfigured"
+    assert all(candidate["freshness_score"] is None for candidate in result["candidates"])
+    assert all(candidate["confidence"] == "unavailable" for candidate in result["candidates"])

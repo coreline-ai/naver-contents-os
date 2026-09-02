@@ -71,7 +71,6 @@ class DraftService:
         blog_type = BlogType(plan_item["blog_type"])
         self._validate_snapshot(keyword_text, snapshot_id)
         if self._llm is not None:
-            # raises for structure-only types: generation is V1-active for HOWTO/POLICY/REVIEW
             prompt = build_prompt(
                 title=plan_item["title"],
                 target_keyword=plan_item["target_keyword"],

@@ -62,6 +62,34 @@ def test_search_parses_text_plain_json_body():
     assert requests[0].headers["X-NCP-APIGW-API-KEY-ID"] == "id"
 
 
+def test_news_latest_uses_date_sort_and_preserves_original_link():
+    requests: list[httpx.Request] = []
+    body = {
+        "total": 1,
+        "items": [{
+            "title": "최신 뉴스",
+            "link": "https://naver.example/1",
+            "originallink": "https://publisher.example/1",
+            "description": "설명",
+            "pubDate": "Wed, 02 Sep 2026 12:00:00 +0900",
+        }],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text=json.dumps(body), headers={"content-type": "text/plain"})
+
+    client = NaverHubSearchClient(
+        make_gateway(), "id", "secret",
+        search_policy=ProviderPolicy("hub_latest_news", 1000),
+        transport=httpx.MockTransport(handler),
+    )
+    result = client.search_news_latest("테스트")
+    assert requests[0].url.params["sort"] == "date"
+    assert requests[0].url.params["display"] == "100"
+    assert result["items"][0]["original_link"] == "https://publisher.example/1"
+
+
 def test_cache_hit_preserves_original_collection_time():
     requests: list[httpx.Request] = []
     client = make_search_client(requests)
@@ -117,6 +145,26 @@ def test_trend_parses_ratio_points():
     series = client.get_search_trend("테스트")
     assert [p.ratio for p in series.points] == [55.2, 100.0]
     assert series.source == "NAVER_API_HUB"
+
+
+def test_trend_accepts_an_exact_completed_date_window():
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"results": []})
+
+    client = NaverHubTrendClient(
+        make_gateway(), "id", "secret",
+        trend_policy=ProviderPolicy("hub_exact_trend", 1000),
+        transport=httpx.MockTransport(handler),
+    )
+    client.get_search_trend(
+        "테스트", time_unit="date", start_date="2026-08-20", end_date="2026-09-02"
+    )
+    assert bodies[0]["startDate"] == "2026-08-20"
+    assert bodies[0]["endDate"] == "2026-09-02"
+    assert bodies[0]["timeUnit"] == "date"
 
 
 def test_trend_missing_ratio_is_schema_error():

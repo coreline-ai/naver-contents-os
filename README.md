@@ -11,10 +11,12 @@
 - 검색 전 오타 교정·민감 키워드 Gate
 - 2단계 Opportunity Graph, 입찰 추정 기반 Commercial Score, 기기·성별·연령 상대 추세
 - 수동 Watchlist, 지역·쇼핑·이미지 특화 분석, SearchAd 계정 성과 기반 콘텐츠 공백 후보
+- 입력 중 local-first 연관 키워드 추천, 분석 상단 Top 8, 주제 기반 급상승 후보
+- 최근 7일/이전 7일 상대 추세와 최신 뉴스 표본을 결합한 `freshness-v1`
 - TTL cache, 원자적 일·월 quota guard, provider별 RPS, `Retry-After`, source provenance
 - Opportunity Score v1 + coverage/confidence, 질문 추출, cluster, 15편 plan
-- WXT/React 사이드패널: 분석/플랜/초안 탭, PC·모바일 검색량, 연관 키워드, 상대 Trend, cluster, API HUB/Browser SERP 근거, Blog Inspector
-- 확장 내부 전체화면 `research.html`: 그래프·Watchlist·특화 분석·광고 성과 Research Workspace
+- WXT/React 사이드패널: 700ms 연관 추천, 상단 연관/급상승 탭, 분석/플랜/초안, 상대 Trend, cluster, API HUB/Browser SERP 근거, Blog Inspector
+- 확장 내부 전체화면 `research.html`: 그래프·급상승·Watchlist·특화 분석·광고 성과 Research Workspace
 - Draft REST API, 버전 이력, snapshot·prompt·provider lineage
 - 사이드패널 Draft 제목·본문 편집, 새 버전 저장, 최신 버전 Publisher Job 연결·상태 조회
 - Ollama·OpenAI 호환 provider와 LLM 없는 skeleton 초안
@@ -70,6 +72,7 @@ pnpm build:ext
 | 화면 | 기능 | 명시적 호출 예산 |
 |---|---|---:|
 | 키워드 맵 | seed + 1차 30개 + 2차 seed 5개, 최대 node 80개 | 최대 12회 |
+| 급상승 | 일반·지역·쇼핑·뉴스, 완료된 14일의 7일 대비 추세와 뉴스 표본 | 최대 10회 |
 | 상업성 | 평균 순위·최소 노출·중간 입찰·성과 추정 | 4회 |
 | 타깃 | 기기 2·성별 2·연령 11개 상대 추세 | 최대 15회 |
 | Watchlist | 선택 키워드 동일 조건 snapshot 수동 비교 | 키워드당 약 2회 |
@@ -80,12 +83,21 @@ pnpm build:ext
 
 Search Trend와 Shopping Insight 차트는 요청 범위마다 독립 정규화된 상대지수입니다. 절대 검색량, 성별·연령 인구 비중 또는 판매량으로 해석하면 안 됩니다. 이미지 검색은 출처 열기와 참고용 썸네일만 제공하며 재사용 권리를 보장하지 않습니다.
 
+### 연관 추천·급상승 후보
+
+- 입력 추천은 최근 분석 키워드를 즉시 표시하고, 한글/CJK 2자 또는 그 외 3자부터 700ms 뒤 SearchAd 결과를 합칩니다.
+- 급상승은 사용자가 `최신 수집`을 눌렀을 때만 실행합니다. 일반·뉴스·쇼핑은 주제 seed가 필요하며 지역은 지역명이 필요합니다.
+- 비교 기간은 KST 기준 오늘을 제외한 최근 완료 14일입니다. 이전 7일 대비 최근 7일의 같은 series 안에서만 변화율을 계산합니다.
+- 뉴스 값은 최신순 최대 100건에서 최근 7일 기사 링크를 중복 제거한 **표본**이며 전체 기사 발생량이 아닙니다.
+- `freshness-v1`은 추세·뉴스 구성 점수와 관측률을 함께 표시합니다. 공급자 실패나 관측 부족은 0점이 아니라 `부분 데이터/계산 불가`입니다.
+- 이 화면은 입력 주제 기반 후보이며 NAVER 공식 실시간 인기 검색어 순위가 아닙니다.
+
 ## 초안 API
 
 사이드패널의 15편 plan에서 다음 기능을 사용할 수 있습니다.
 
 - `구조 초안`: 모든 BlogType의 section skeleton 생성
-- `AI 초안`: `HOWTO`, `POLICY`, `REVIEW`만 지원
+- `AI 초안`: `HOWTO`, `POLICY`, `REVIEW`, `COMPARISON`, `HOMEFEED`, `PRODUCT`, `NEWS`, `SERIES` 지원
 
 AI 초안을 사용하려면 먼저 model을 설치합니다.
 
@@ -137,7 +149,7 @@ uv run python scripts/verify_api_hub.py --research
 uv run python scripts/verify_searchad.py --research "러닝화"
 ```
 
-기본 검증은 외부 API, Ollama, Codex proxy, Chrome, SmartEditor를 호출하지 않습니다. 현재 기준으로 Python non-live 150개와 Extension 29개, 총 179개 테스트가 통과합니다. Extension production bundle은 `research.html`을 포함해 총 312.4KB입니다.
+기본 검증은 외부 API, Ollama, Codex proxy, Chrome, SmartEditor를 호출하지 않습니다. 현재 기준으로 Python non-live 159개와 Extension 32개, 총 191개 테스트가 통과합니다. Extension production bundle은 `research.html`을 포함해 총 331.07KB입니다.
 
 ## 주요 문서
 

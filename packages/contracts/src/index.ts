@@ -249,6 +249,91 @@ export interface PreflightResponse {
   collected_at: string;
 }
 
+export type SuggestionSource = 'recent' | 'searchad';
+
+export interface KeywordSuggestion {
+  keyword: string;
+  source: SuggestionSource;
+  monthly_searches: number | null;
+  volume_masked: boolean;
+  competition: string | null;
+  from_cache: boolean;
+  collected_at: string;
+}
+
+export interface KeywordSuggestionResponse {
+  query: string;
+  status: string;
+  data_status: Record<string, string>;
+  suggestions: KeywordSuggestion[];
+  collected_at: string;
+}
+
+export type RisingMode = 'general' | 'local' | 'shopping' | 'news';
+export type RisingDirection = 'new' | 'rising' | 'steady' | 'falling' | 'insufficient';
+
+export interface FreshnessComponents {
+  trend_score: number | null;
+  news_volume_score: number | null;
+  news_recency_score: number | null;
+  news_score: number | null;
+  trend_weight: number;
+  news_weight: number;
+  reason: string | null;
+}
+
+export interface RisingCandidate {
+  keyword: string;
+  direction: RisingDirection;
+  recent7_avg: number | null;
+  previous7_avg: number | null;
+  growth_rate: number | null;
+  trend_score: number | null;
+  news_7d_sample_count: number | null;
+  sample_capped: boolean;
+  latest_news_at: string | null;
+  news_score: number | null;
+  freshness_score: number | null;
+  confidence: 'unavailable' | 'low' | 'medium' | 'high';
+  coverage: { observed_days: number; recent_days: number; previous_days: number };
+  monthly_searches: number | null;
+  volume_masked: boolean;
+  components: FreshnessComponents;
+  data_status: Record<string, string>;
+  source_meta: Record<string, unknown>;
+}
+
+export interface RisingRequest {
+  seed?: string;
+  mode: RisingMode;
+  region?: string;
+  category?: string;
+  candidate_limit?: number;
+  force_refresh?: boolean;
+}
+
+export interface RisingResponse {
+  run_id: number | null;
+  seed: string;
+  effective_seed: string;
+  mode: RisingMode;
+  region: string;
+  category: string;
+  status: string;
+  comparison_window: { start_date: string; end_date: string; recent_start: string };
+  estimated_calls: number;
+  actual_calls: number;
+  score_version: 'freshness-v1';
+  collected_at: string;
+  data_status: Record<string, string>;
+  candidates: RisingCandidate[];
+  disclaimer: string;
+}
+
+export interface LatestRisingResponse {
+  run: RisingResponse | null;
+}
+
 export interface ResearchGraphNode {
   id: string;
   keyword: string;

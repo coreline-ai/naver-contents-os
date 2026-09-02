@@ -88,6 +88,54 @@ class GraphRequest(KeywordResearchRequest):
     snapshot_id: int | None = Field(default=None, ge=1)
 
 
+def _valid_suggestion_length(value: str) -> bool:
+    compact_value = "".join(value.split())
+    has_cjk = any("\u2e80" <= char <= "\ud7af" for char in compact_value)
+    return len(compact_value) >= (2 if has_cjk else 3)
+
+
+class SuggestRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=100)
+    limit: int = Field(default=8, ge=1, le=8)
+
+    @field_validator("query")
+    @classmethod
+    def normalize_suggest_query(cls, value: str) -> str:
+        normalized = normalize_keyword(value)
+        if not _valid_suggestion_length(normalized):
+            raise ValueError("query must contain 2 CJK characters or 3 other characters")
+        return normalized
+
+
+class RisingRequest(BaseModel):
+    seed: str = Field(default="", max_length=100)
+    mode: Literal["general", "local", "shopping", "news"] = "general"
+    region: str = Field(default="", max_length=100)
+    category: str = Field(default="", max_length=30)
+    candidate_limit: int = Field(default=20, ge=1, le=20)
+    force_refresh: bool = False
+
+    @field_validator("seed", "region")
+    @classmethod
+    def normalize_rising_text(cls, value: str) -> str:
+        return normalize_keyword(value)
+
+    @field_validator("category")
+    @classmethod
+    def normalize_category(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_mode_inputs(self):
+        if self.mode in {"general", "shopping", "news"} and not self.seed:
+            raise ValueError("seed is required for this mode")
+        if self.mode == "local" and not self.region:
+            raise ValueError("region is required for local mode")
+        if self.mode == "shopping" and not self.category:
+            raise ValueError("category is required for shopping mode")
+        return self
+
+
 class CommercialRequest(BaseModel):
     keywords: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
         min_length=1, max_length=20
@@ -161,6 +209,14 @@ def preflight_keyword(
     return service.preflight(request.keyword, force_refresh=request.force_refresh)
 
 
+@router.post("/keywords/suggest")
+def suggest_keywords(
+    request: SuggestRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.suggest(request.query, limit=request.limit)
+
+
 @router.post("/research/graph")
 def build_keyword_graph(
     request: GraphRequest,
@@ -170,6 +226,45 @@ def build_keyword_graph(
         request.keyword,
         snapshot_id=request.snapshot_id,
         force_refresh=request.force_refresh,
+    )
+
+
+@router.post("/research/rising")
+def discover_rising_keywords(
+    request: RisingRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.rising(
+        seed=request.seed,
+        mode=request.mode,
+        region=request.region,
+        category=request.category,
+        candidate_limit=request.candidate_limit,
+        force_refresh=request.force_refresh,
+    )
+
+
+@router.get("/research/rising/latest")
+def get_latest_rising_keywords(
+    mode: Literal["general", "local", "shopping", "news"] = "general",
+    seed: str = "",
+    region: str = "",
+    category: str = "",
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    normalized_seed = normalize_keyword(seed)
+    normalized_region = normalize_keyword(region)
+    if mode in {"general", "shopping", "news"} and not normalized_seed:
+        raise HTTPException(status_code=422, detail={"code": "validation", "message": "seed is required for this mode"})
+    if mode == "local" and not normalized_region:
+        raise HTTPException(status_code=422, detail={"code": "validation", "message": "region is required for local mode"})
+    if mode == "shopping" and not category.strip():
+        raise HTTPException(status_code=422, detail={"code": "validation", "message": "category is required for shopping mode"})
+    return service.latest_rising(
+        seed=normalized_seed,
+        mode=mode,
+        region=normalized_region,
+        category=category.strip(),
     )
 
 

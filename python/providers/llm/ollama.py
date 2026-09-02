@@ -15,7 +15,7 @@ class OllamaProvider:
         base_url: str = "http://127.0.0.1:11434",
         model: str = "",
         transport: httpx.BaseTransport | None = None,
-        timeout: float = 300.0,
+        timeout: float = 600.0,
     ):
         self._model = model
         self._http = httpx.Client(base_url=base_url, timeout=timeout, transport=transport)
@@ -47,7 +47,16 @@ class OllamaProvider:
         try:
             response = self._http.post(
                 "/api/chat",
-                json={"model": model, "messages": messages, "stream": False},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    # Qwen3 같은 추론형 모델은 블로그 초안에서 내부 사고가
+                    # 본문보다 길어질 수 있다. 초안은 이미 구조화된 프롬프트를
+                    # 사용하므로 사고 모드를 끄고 본문 생성 예산을 명시한다.
+                    "think": False,
+                    "options": {"num_ctx": 4096, "num_predict": 2048},
+                },
             )
             response.raise_for_status()
             content = response.json().get("message", {}).get("content", "")

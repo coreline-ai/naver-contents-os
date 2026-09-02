@@ -2,9 +2,12 @@ import type {
   AnalyzeResponse,
   DraftDetail,
   DraftGenerationMode,
+  KeywordSuggestion,
   PlanItem,
   PreflightResponse,
   PublishJob,
+  RisingMode,
+  RisingResponse,
   SerpObservation,
   SpecializedResponse,
 } from '@ncos/contracts';
@@ -15,6 +18,7 @@ import { CoreClient, CoreError } from '~/lib/core';
 import { MSG_GET_BLOG, MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
 import type { BlogParse } from '~/lib/parsers/blog';
 import type { SerpParse } from '~/lib/parsers/serp';
+import { isSuggestionQuery, loadRecentKeywords, mergeSuggestions, recentSuggestions, rememberRecentKeyword } from '~/lib/recent-keywords';
 import { useSettings } from '~/lib/settings';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -66,11 +70,24 @@ export default function App() {
   const [preflightPending, setPreflightPending] = useState(false);
   const [sensitiveKeyword, setSensitiveKeyword] = useState(false);
   const [specialized, setSpecialized] = useState<SpecializedResponse | null>(null);
+  const [recentKeywords, setRecentKeywords] = useState<string[]>([]);
+  const [providerSuggestions, setProviderSuggestions] = useState<KeywordSuggestion[]>([]);
+  const [suggestionStatus, setSuggestionStatus] = useState('idle');
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
+  const [discoveryTab, setDiscoveryTab] = useState<'related' | 'rising'>('related');
+  const [risingMode, setRisingMode] = useState<RisingMode>('general');
+  const [risingRegion, setRisingRegion] = useState('');
+  const [risingResult, setRisingResult] = useState<RisingResponse | null>(null);
+  const [risingPending, setRisingPending] = useState(false);
+  const [risingError, setRisingError] = useState('');
+  const suggestionAbort = useRef<AbortController | null>(null);
   const analysisEpoch = useRef(0);
   const draftEpoch = useRef(0);
 
   useEffect(() => {
     void settings.load();
+    void loadRecentKeywords().then(setRecentKeywords);
   }, []);
   useEffect(() => {
     setTokenDraft(settings.token);
@@ -88,6 +105,61 @@ export default function App() {
     refetchInterval: 30_000,
   });
 
+  const suggestions = useMemo(
+    () => mergeSuggestions(recentSuggestions(keyword, recentKeywords), providerSuggestions),
+    [keyword, providerSuggestions, recentKeywords],
+  );
+
+  useEffect(() => {
+    suggestionAbort.current?.abort();
+    if (!suggestionsOpen || !handshake.isSuccess || !isSuggestionQuery(keyword)) {
+      setProviderSuggestions([]);
+      setSuggestionStatus('idle');
+      return;
+    }
+    const controller = new AbortController();
+    suggestionAbort.current = controller;
+    const timer = window.setTimeout(() => {
+      setSuggestionStatus('loading');
+      void client.suggestKeywords(keyword, controller.signal).then((response) => {
+        if (controller.signal.aborted) return;
+        setProviderSuggestions(response.suggestions);
+        setSuggestionStatus(response.status);
+        setActiveSuggestion(0);
+      }).catch(() => {
+        if (!controller.signal.aborted) setSuggestionStatus('unavailable');
+      });
+    }, 700);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [client, handshake.isSuccess, keyword, suggestionsOpen]);
+
+  useEffect(() => {
+    if (!result || !settings.token) return;
+    if (risingMode === 'local' && !risingRegion.trim()) {
+      setRisingResult(null);
+      return;
+    }
+    if (risingMode === 'shopping' && !shoppingCategory.trim()) {
+      setRisingResult(null);
+      return;
+    }
+    let active = true;
+    void client.latestRising({
+      seed: result.keyword,
+      mode: risingMode,
+      region: risingRegion,
+      category: shoppingCategory,
+    }).then((response) => {
+      if (active) setRisingResult(response.run);
+    }).catch(() => {
+      if (active) setRisingResult(null);
+    });
+    return () => { active = false; };
+  }, [client, result?.keyword, risingMode, risingRegion, settings.token, shoppingCategory]);
+
   const analyze = useMutation<
     AnalyzeResponse,
     CoreError,
@@ -99,6 +171,7 @@ export default function App() {
       if (variables.requestId === analysisEpoch.current) {
         setResult(data);
         setSectionTab('analysis');
+        void rememberRecentKeyword(data.keyword).then(setRecentKeywords);
       }
     },
   });
@@ -191,6 +264,12 @@ export default function App() {
     setSerpNotice('');
   }
 
+  function handleKeywordInput(nextKeyword: string) {
+    changeKeyword(nextKeyword);
+    setSuggestionsOpen(true);
+    setActiveSuggestion(0);
+  }
+
   function runAnalysis(
     targetKeyword: string,
     force = false,
@@ -212,7 +291,10 @@ export default function App() {
     try {
       const checked = await client.preflight(targetKeyword);
       setPreflight(checked);
-      setSensitiveKeyword(checked.sensitive !== false);
+      setSensitiveKeyword(
+        checked.sensitive === true
+          || (checked.sensitive === null && !settings.allowLlmWhenSensitiveUnknown),
+      );
       if (checked.correction || checked.sensitive === true) return;
     } catch {
       // Preflight is optional. Missing permission or an older Local Core must not
@@ -251,8 +333,39 @@ export default function App() {
   }
 
   function analyzeSuggestedKeyword(nextKeyword: string) {
+    setSuggestionsOpen(false);
+    setProviderSuggestions([]);
     changeKeyword(nextKeyword);
     void beginAnalysis(nextKeyword);
+  }
+
+  async function collectRising() {
+    if (!result || risingPending) return;
+    if (risingMode === 'local' && !risingRegion.trim()) {
+      setRisingError('지역명을 입력하세요.');
+      return;
+    }
+    if (risingMode === 'shopping' && !shoppingCategory.trim()) {
+      setRisingError('쇼핑 category code를 입력하세요.');
+      return;
+    }
+    if (!window.confirm('연관 후보의 14일 추세와 최신 뉴스 표본을 수집합니다. 최대 10회 호출을 진행할까요?')) return;
+    setRisingPending(true);
+    setRisingError('');
+    try {
+      setRisingResult(await client.rising({
+        seed: result.keyword,
+        mode: risingMode,
+        region: risingRegion,
+        category: shoppingCategory,
+        candidate_limit: 20,
+        force_refresh: true,
+      }));
+    } catch (error) {
+      setRisingError(error instanceof CoreError ? `${error.code}: ${error.message}` : '급상승 후보를 수집하지 못했습니다.');
+    } finally {
+      setRisingPending(false);
+    }
   }
 
   function runCreateDraft(planItem: PlanItem, mode: DraftGenerationMode) {
@@ -342,18 +455,83 @@ export default function App() {
           >
             저장
           </button>
+          <label className="mt-3 flex items-start gap-2 rounded bg-slate-50 p-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={settings.allowLlmWhenSensitiveUnknown}
+              onChange={(event) => {
+                const allowed = event.target.checked;
+                void settings.save({ allowLlmWhenSensitiveUnknown: allowed });
+                if (preflight?.sensitive === null) setSensitiveKeyword(!allowed);
+              }}
+              className="mt-0.5"
+            />
+            <span>
+              민감 키워드 판별 API가 응답하지 않아도 AI 초안 사용
+              <span className="mt-0.5 block text-[10px] text-amber-700">실제 민감 키워드로 판별된 경우에는 계속 차단됩니다.</span>
+            </span>
+          </label>
         </section>
       )}
 
       <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
         <div className="flex gap-2">
-          <input
-            value={keyword}
-            onChange={(e) => changeKeyword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void beginAnalysis(keyword)}
-            placeholder="키워드 입력"
-            className="w-full rounded border border-slate-300 px-2 py-1.5"
-          />
+          <div className="relative min-w-0 flex-1">
+            <input
+              value={keyword}
+              onChange={(e) => handleKeywordInput(e.target.value)}
+              onFocus={() => { if (keyword.trim()) setSuggestionsOpen(true); }}
+              onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 100)}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' && suggestions.length > 0) {
+                  event.preventDefault();
+                  setSuggestionsOpen(true);
+                  setActiveSuggestion((value) => (value + 1) % suggestions.length);
+                } else if (event.key === 'ArrowUp' && suggestions.length > 0) {
+                  event.preventDefault();
+                  setActiveSuggestion((value) => (value - 1 + suggestions.length) % suggestions.length);
+                } else if (event.key === 'Escape') {
+                  setSuggestionsOpen(false);
+                } else if (event.key === 'Enter') {
+                  event.preventDefault();
+                  if (suggestionsOpen && suggestions[activeSuggestion]) {
+                    analyzeSuggestedKeyword(suggestions[activeSuggestion].keyword);
+                  } else {
+                    void beginAnalysis(keyword);
+                  }
+                }
+              }}
+              placeholder="키워드 입력"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={suggestionsOpen && suggestions.length > 0}
+              aria-controls="keyword-suggestions"
+              aria-activedescendant={suggestionsOpen && suggestions[activeSuggestion] ? `keyword-suggestion-${activeSuggestion}` : undefined}
+              className="w-full rounded border border-slate-300 px-2 py-1.5"
+            />
+            {suggestionsOpen && (suggestions.length > 0 || suggestionStatus === 'loading') && (
+              <div id="keyword-suggestions" role="listbox" className="absolute inset-x-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+                {suggestions.map((suggestion, index) => (
+                  <button
+                    id={`keyword-suggestion-${index}`}
+                    role="option"
+                    aria-selected={index === activeSuggestion}
+                    key={`${suggestion.source}-${suggestion.keyword}`}
+                    className={`flex w-full items-center justify-between rounded px-2 py-2 text-left text-xs ${index === activeSuggestion ? 'bg-emerald-50 text-emerald-900' : 'hover:bg-slate-50'}`}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => analyzeSuggestedKeyword(suggestion.keyword)}
+                  >
+                    <span className="min-w-0 truncate font-medium">{suggestion.keyword}</span>
+                    <span className="ml-2 shrink-0 text-[10px] text-slate-400">
+                      {suggestion.source === 'recent' ? '최근' : suggestion.monthly_searches?.toLocaleString() ?? (suggestion.volume_masked ? '10 미만' : 'SearchAd')}
+                    </span>
+                  </button>
+                ))}
+                {suggestionStatus === 'loading' && <p className="px-2 py-1 text-[10px] text-slate-400">연관 키워드 확인 중…</p>}
+                {suggestionStatus === 'unavailable' && <p className="px-2 py-1 text-[10px] text-amber-700">외부 추천을 불러오지 못해 최근 키워드만 표시합니다.</p>}
+              </div>
+            )}
+          </div>
           <button
             className="whitespace-nowrap rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
             disabled={!keyword || !connected || preflightPending || (currentAnalysisMutation && analyze.isPending) || (mode === 'shopping' && !shoppingCategory.trim())}
@@ -403,7 +581,25 @@ export default function App() {
           </div>
         )}
         {preflight && preflight.sensitive === null && preflight.data_status.adult !== 'ok' && (
-          <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">민감 키워드 판별을 완료하지 못해 AI 초안을 안전하게 비활성화했습니다.</p>
+          <div className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+            <p>
+              민감 키워드 판별 API가 응답하지 않았습니다.
+              {settings.allowLlmWhenSensitiveUnknown
+                ? ' 사용자 설정에 따라 AI 초안을 사용할 수 있습니다.'
+                : ' 기본 보호 설정으로 AI 초안을 비활성화했습니다.'}
+            </p>
+            {!settings.allowLlmWhenSensitiveUnknown && (
+              <button
+                className="mt-1.5 rounded bg-amber-700 px-2 py-1 font-medium text-white"
+                onClick={() => {
+                  void settings.save({ allowLlmWhenSensitiveUnknown: true });
+                  setSensitiveKeyword(false);
+                }}
+              >
+                이 기기에서 AI 초안 허용
+              </button>
+            )}
+          </div>
         )}
         <div className="mt-2 flex items-center gap-2 text-xs">
           <button className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-100" onClick={() => void pullCurrentSearch()}>
@@ -429,6 +625,25 @@ export default function App() {
           </p>
         )}
       </section>
+
+      {result && (
+        <KeywordDiscoveryCard
+          result={result}
+          tab={discoveryTab}
+          onTab={setDiscoveryTab}
+          risingMode={risingMode}
+          onRisingMode={(value) => { setRisingMode(value); setRisingResult(null); setRisingError(''); }}
+          region={risingRegion}
+          onRegion={setRisingRegion}
+          category={shoppingCategory}
+          onCategory={setShoppingCategory}
+          rising={risingResult}
+          pending={risingPending}
+          error={risingError}
+          onCollect={() => void collectRising()}
+          onSelect={analyzeSuggestedKeyword}
+        />
+      )}
 
       {result && (
         <nav className="mt-3 grid grid-cols-3 rounded-lg border border-slate-200 bg-white p-1" aria-label="작업 단계">
@@ -607,6 +822,86 @@ function mobileShare(metric: AnalyzeResponse['related_keywords'][number]): numbe
   const total = monthlyTotal(metric);
   if (total == null || total <= 0 || metric.monthly_mobile_searches == null) return null;
   return metric.monthly_mobile_searches / total;
+}
+
+const RISING_DIRECTION_LABEL: Record<string, string> = {
+  new: '신규',
+  rising: '상승',
+  steady: '보합',
+  falling: '하락',
+  insufficient: '자료 부족',
+};
+
+export function KeywordDiscoveryCard({
+  result,
+  tab,
+  onTab,
+  risingMode,
+  onRisingMode,
+  region,
+  onRegion,
+  category,
+  onCategory,
+  rising,
+  pending,
+  error,
+  onCollect,
+  onSelect,
+}: {
+  result: AnalyzeResponse;
+  tab: 'related' | 'rising';
+  onTab: (tab: 'related' | 'rising') => void;
+  risingMode: RisingMode;
+  onRisingMode: (mode: RisingMode) => void;
+  region: string;
+  onRegion: (value: string) => void;
+  category: string;
+  onCategory: (value: string) => void;
+  rising: RisingResponse | null;
+  pending: boolean;
+  error: string;
+  onCollect: () => void;
+  onSelect: (keyword: string) => void;
+}) {
+  const related = [...result.related_keywords].sort((a, b) => {
+    const volumeDiff = (monthlyTotal(b) ?? -1) - (monthlyTotal(a) ?? -1);
+    return volumeDiff || a.keyword.localeCompare(b.keyword, 'ko');
+  }).slice(0, 8);
+  return (
+    <section className="mt-3 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm" aria-label="상단 키워드 탐색">
+      <div className="grid grid-cols-2 rounded-lg bg-slate-100 p-1">
+        <button className={`rounded-md py-1.5 text-xs font-semibold ${tab === 'related' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500'}`} onClick={() => onTab('related')}>연관 키워드</button>
+        <button className={`rounded-md py-1.5 text-xs font-semibold ${tab === 'rising' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}`} onClick={() => onTab('rising')}>급상승 키워드</button>
+      </div>
+      {tab === 'related' && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between"><p className="text-[10px] text-slate-400">검색량 상위 Top 8 · 누르면 즉시 재분석</p><span className="text-[10px] text-slate-400">SearchAd</span></div>
+          {related.length > 0 ? <div className="mt-2 grid grid-cols-2 gap-1.5">
+            {related.map((metric) => <button key={metric.keyword} className="min-w-0 rounded-lg border border-slate-100 bg-slate-50 px-2 py-1.5 text-left hover:border-emerald-300 hover:bg-emerald-50" onClick={() => onSelect(metric.keyword)}><b className="block truncate text-xs">{metric.keyword}</b><span className="text-[10px] text-slate-400">{monthlyTotal(metric)?.toLocaleString() ?? (metric.volume_masked ? '10 미만' : '검색량 결측')}</span></button>)}
+          </div> : <p className="mt-2 rounded bg-slate-50 p-2 text-xs text-slate-400">연관 키워드 데이터가 없습니다.</p>}
+        </div>
+      )}
+      {tab === 'rising' && (
+        <div className="mt-2">
+          <div className="flex flex-wrap gap-1" aria-label="급상승 분야">
+            {([['general', '일반'], ['local', '지역'], ['shopping', '쇼핑'], ['news', '뉴스']] as const).map(([value, label]) => <button key={value} className={`rounded-full px-2 py-1 text-[10px] ${risingMode === value ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-600'}`} onClick={() => onRisingMode(value)}>{label}</button>)}
+          </div>
+          {risingMode === 'local' && <input className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-xs" value={region} onChange={(event) => onRegion(event.target.value)} placeholder="지역명 (예: 성수, 부산)" />}
+          {risingMode === 'shopping' && <input className="mt-2 w-full rounded border border-slate-300 px-2 py-1 text-xs" value={category} onChange={(event) => onCategory(event.target.value)} placeholder="Shopping category code" />}
+          <div className="mt-2 flex items-center gap-2">
+            <button className="rounded bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-40" disabled={pending || (risingMode === 'local' && !region.trim()) || (risingMode === 'shopping' && !category.trim())} onClick={onCollect}>{pending ? '수집 중…' : '최신 수집 · 최대 10회'}</button>
+            {rising && <span className="text-[10px] text-slate-400">{new Date(rising.collected_at).toLocaleString()} · {rising.actual_calls}/{rising.estimated_calls}회</span>}
+          </div>
+          <p className="mt-1 text-[10px] text-slate-400">주제 기반 후보이며 공식 실시간 인기순위가 아닙니다.</p>
+          {error && <p className="mt-2 rounded bg-rose-50 p-2 text-[10px] text-rose-700">{error}</p>}
+          {rising && rising.candidates.length > 0 && <div className="mt-2 space-y-1.5">
+            {rising.candidates.slice(0, 8).map((candidate) => <button key={candidate.keyword} className="grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg border border-slate-100 px-2 py-2 text-left hover:border-rose-300 hover:bg-rose-50" onClick={() => onSelect(candidate.keyword)}><span className="min-w-0 truncate text-xs font-semibold">{candidate.keyword}</span><span className={`text-[10px] ${candidate.direction === 'rising' || candidate.direction === 'new' ? 'text-rose-600' : candidate.direction === 'falling' ? 'text-sky-600' : 'text-slate-400'}`}>{RISING_DIRECTION_LABEL[candidate.direction]}{candidate.growth_rate == null ? '' : ` ${candidate.growth_rate > 0 ? '+' : ''}${candidate.growth_rate}%`}</span><span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] tabular-nums">최신성 {candidate.freshness_score ?? '—'}</span></button>)}
+          </div>}
+          {rising && rising.candidates.length === 0 && <p className="mt-2 rounded bg-slate-50 p-2 text-xs text-slate-400">수집된 후보가 없습니다. 공급자 설정과 데이터 상태를 확인하세요.</p>}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function DataMeta({

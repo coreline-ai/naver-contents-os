@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -12,10 +14,9 @@ def test_all_eight_blog_types_have_structure():
     assert all(len(sections) >= 4 for sections in TEMPLATES.values())
 
 
-def test_v1_active_types():
-    assert ACTIVE_TYPES == {BlogType.HOWTO, BlogType.POLICY, BlogType.REVIEW}
-    assert is_active(BlogType.POLICY)
-    assert not is_active(BlogType.COMPARISON)
+def test_all_blog_types_are_active_for_generation():
+    assert ACTIVE_TYPES == set(BlogType)
+    assert all(is_active(blog_type) for blog_type in BlogType)
 
 
 def test_build_prompt_contains_sections_and_requirements():
@@ -29,9 +30,11 @@ def test_build_prompt_contains_sections_and_requirements():
     assert prompt.index("1. 결론 요약") < prompt.index("2. 조건") < prompt.index("5. 주의사항")
 
 
-def test_build_prompt_rejects_structure_only_types():
-    with pytest.raises(ValueError):
-        build_prompt("비교글", "kw", BlogType.COMPARISON)
+def test_build_prompt_supports_all_blog_types():
+    for blog_type in BlogType:
+        prompt = build_prompt("테스트 글", "테스트", blog_type)
+        assert blog_type.value in prompt
+        assert TEMPLATES[blog_type][0].name in prompt
 
 
 def make_ollama(handler):
@@ -42,8 +45,10 @@ def test_ollama_resolves_first_installed_model_and_generates():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [{"name": "qwen3:8b"}, {"name": "llama3"}]})
-        body = request.read().decode()
-        assert '"model": "qwen3:8b"' in body or '"model":"qwen3:8b"' in body
+        body = json.loads(request.read())
+        assert body["model"] == "qwen3:8b"
+        assert body["think"] is False
+        assert body["options"] == {"num_ctx": 4096, "num_predict": 2048}
         return httpx.Response(200, json={"message": {"content": "제목: 테스트\n\n본문"}})
 
     provider = make_ollama(handler)

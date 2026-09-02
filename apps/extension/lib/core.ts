@@ -11,9 +11,13 @@ import type {
   DraftCreateResponse,
   DraftDetail,
   HealthResponse,
+  KeywordSuggestionResponse,
+  LatestRisingResponse,
   PublishJob,
   PreflightResponse,
   ResearchGraphResponse,
+  RisingRequest,
+  RisingResponse,
   SerpObservation,
   SpecializedResponse,
   WatchlistItem,
@@ -88,6 +92,29 @@ export class CoreClient {
       method: 'POST',
       body: JSON.stringify({ keyword, force_refresh: forceRefresh }),
     });
+  }
+
+  suggestKeywords(query: string, signal?: AbortSignal): Promise<KeywordSuggestionResponse> {
+    return this.request<KeywordSuggestionResponse>('/v1/keywords/suggest', {
+      method: 'POST',
+      body: JSON.stringify({ query, limit: 8 }),
+      signal,
+    });
+  }
+
+  rising(input: RisingRequest): Promise<RisingResponse> {
+    return this.request<RisingResponse>('/v1/research/rising', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  latestRising(input: Omit<RisingRequest, 'candidate_limit' | 'force_refresh'>): Promise<LatestRisingResponse> {
+    const query = new URLSearchParams({ mode: input.mode });
+    if (input.seed) query.set('seed', input.seed);
+    if (input.region) query.set('region', input.region);
+    if (input.category) query.set('category', input.category);
+    return this.request<LatestRisingResponse>(`/v1/research/rising/latest?${query.toString()}`);
   }
 
   graph(keyword: string, snapshotId?: number | null, forceRefresh = false): Promise<ResearchGraphResponse> {

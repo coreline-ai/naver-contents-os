@@ -26,6 +26,8 @@ from providers.models import (
 BASE_URL = "https://naverapihub.apigw.ntruss.com"
 HUB_SEARCH_TTL = 6 * 3600
 HUB_TREND_TTL = 24 * 3600
+HUB_DAILY_TREND_TTL = 6 * 3600
+HUB_NEWS_LATEST_TTL = 15 * 60
 HUB_PREFLIGHT_TTL = 24 * 3600
 
 CHANNEL_PATHS = {
@@ -65,6 +67,32 @@ def _load_object(gateway: Gateway, policy: ProviderPolicy, body: str) -> dict:
     if not isinstance(data, dict):
         raise gateway.invalid_schema(policy, "upstream JSON root must be an object")
     return data
+
+
+def _date_value(value: dt.date | str | None) -> dt.date | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.date):
+        return value
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("dates must use YYYY-MM-DD") from exc
+
+
+def _date_range(
+    *, months: int, start_date: dt.date | str | None, end_date: dt.date | str | None
+) -> tuple[str, str]:
+    explicit_start = _date_value(start_date)
+    explicit_end = _date_value(end_date)
+    if (explicit_start is None) != (explicit_end is None):
+        raise ValueError("start_date and end_date must be provided together")
+    if explicit_start is not None and explicit_end is not None:
+        if explicit_start > explicit_end:
+            raise ValueError("start_date must not be after end_date")
+        return explicit_start.isoformat(), explicit_end.isoformat()
+    today = dt.date.today()
+    return (today - dt.timedelta(days=months * 30)).strftime("%Y-%m-01"), today.isoformat()
 
 
 class NaverHubSearchClient:
@@ -108,10 +136,17 @@ class NaverHubSearchClient:
         return _load_object(self._gateway, self._policy, result.body), result
 
     def search(
-        self, channel: str, query: str, *, display: int = 10, start: int = 1, force_refresh: bool = False
+        self,
+        channel: str,
+        query: str,
+        *,
+        display: int = 10,
+        start: int = 1,
+        sort: str = "sim",
+        force_refresh: bool = False,
     ) -> SearchChannelResult:
         path = CHANNEL_PATHS[channel]
-        params = {"query": query, "display": display, "start": start}
+        params = {"query": query, "display": display, "start": start, "sort": sort}
         data, result = self._get_object(path, params, force_refresh=force_refresh)
         if not isinstance(data.get("items", []), list):
             raise self._gateway.invalid_schema(self._policy, "search.items must be a list")
@@ -125,6 +160,41 @@ class NaverHubSearchClient:
             )
         except (ValidationError, TypeError, ValueError) as exc:
             raise self._gateway.invalid_schema(self._policy, "invalid search response schema") from exc
+
+    def search_news_latest(
+        self, query: str, *, display: int = 100, force_refresh: bool = False
+    ) -> dict:
+        if not 1 <= display <= 100:
+            raise ValueError("news display must be between 1 and 100")
+        data, result = self._get_object(
+            "/search/v1/news",
+            {"query": query, "display": display, "start": 1, "sort": "date"},
+            ttl_seconds=HUB_NEWS_LATEST_TTL,
+            force_refresh=force_refresh,
+        )
+        rows = data.get("items", [])
+        if not isinstance(rows, list):
+            raise self._gateway.invalid_schema(self._policy, "news.items must be a list")
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise self._gateway.invalid_schema(self._policy, "news item must be an object")
+            items.append(
+                {
+                    "title": str(row.get("title", "")),
+                    "link": str(row.get("link", "")),
+                    "original_link": str(row.get("originallink", "")),
+                    "description": str(row.get("description", "")),
+                    "published_at": str(row.get("pubDate", "")),
+                }
+            )
+        return {
+            "items": items,
+            "total": data.get("total"),
+            "display": display,
+            "collected_at": result.collected_at.isoformat(),
+            "from_cache": result.from_cache,
+        }
 
     def landscape(self, keyword: str, *, force_refresh: bool = False) -> SearchLandscape:
         """5-channel competition landscape for one keyword."""
@@ -281,6 +351,8 @@ class NaverHubTrendClient:
         *,
         months: int = 12,
         time_unit: str = "month",
+        start_date: dt.date | str | None = None,
+        end_date: dt.date | str | None = None,
         device: str = "",
         gender: str = "",
         ages: list[str] | None = None,
@@ -298,10 +370,12 @@ class NaverHubTrendClient:
         valid_ages = {str(value) for value in range(1, 12)}
         if any(age not in valid_ages for age in age_values):
             raise ValueError("invalid trend age")
-        today = dt.date.today()
+        start_value, end_value = _date_range(
+            months=months, start_date=start_date, end_date=end_date
+        )
         payload: dict = {
-            "startDate": (today - dt.timedelta(days=months * 30)).strftime("%Y-%m-01"),
-            "endDate": today.strftime("%Y-%m-%d"),
+            "startDate": start_value,
+            "endDate": end_value,
             "timeUnit": time_unit,
             "keywordGroups": [
                 {"groupName": name, "keywords": keywords} for name, keywords in keyword_groups
@@ -317,7 +391,7 @@ class NaverHubTrendClient:
         result = self._gateway.request(
             policy=self._policy,
             key=key,
-            ttl_seconds=HUB_TREND_TTL,
+            ttl_seconds=HUB_DAILY_TREND_TTL if time_unit == "date" else HUB_TREND_TTL,
             send=lambda: self._http.post("/search-trend/v1/search", json=payload),
             force_refresh=force_refresh,
         )
@@ -373,12 +447,16 @@ class NaverHubTrendClient:
         *,
         months: int = 12,
         time_unit: str = "month",
+        start_date: dt.date | str | None = None,
+        end_date: dt.date | str | None = None,
         force_refresh: bool = False,
     ) -> TrendSeries:
         rows = self.get_search_trends(
             [(keyword, [keyword])],
             months=months,
             time_unit=time_unit,
+            start_date=start_date,
+            end_date=end_date,
             force_refresh=force_refresh,
         )
         return rows[0]
@@ -413,15 +491,19 @@ class NaverHubShoppingClient:
         *,
         months: int = 12,
         time_unit: str = "month",
+        start_date: dt.date | str | None = None,
+        end_date: dt.date | str | None = None,
         force_refresh: bool = False,
     ) -> list[dict]:
         cleaned = [keyword.strip() for keyword in keywords if keyword.strip()][:5]
         if not category.strip() or not cleaned:
             raise ValueError("shopping category and keywords are required")
-        today = dt.date.today()
+        start_value, end_value = _date_range(
+            months=months, start_date=start_date, end_date=end_date
+        )
         payload = {
-            "startDate": (today - dt.timedelta(days=months * 30)).strftime("%Y-%m-01"),
-            "endDate": today.strftime("%Y-%m-%d"),
+            "startDate": start_value,
+            "endDate": end_value,
             "timeUnit": time_unit,
             "category": category.strip(),
             "keyword": [{"name": keyword, "param": [keyword]} for keyword in cleaned],
@@ -431,7 +513,7 @@ class NaverHubShoppingClient:
         result = self._gateway.request(
             policy=self._policy,
             key=key,
-            ttl_seconds=HUB_TREND_TTL,
+            ttl_seconds=HUB_DAILY_TREND_TTL if time_unit == "date" else HUB_TREND_TTL,
             send=lambda: self._http.post(uri, json=payload),
             force_refresh=force_refresh,
         )

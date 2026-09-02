@@ -12,10 +12,15 @@ NaverHubSearchClient
   ├─ search_cafe()
   ├─ search_kin()
   ├─ search_web()
-  └─ search_news()
+  ├─ search_news()
+  └─ search_news_latest(sort=date, display<=100)
 
 NaverHubTrendClient
-  └─ get_search_trend()
+  ├─ get_search_trend()
+  └─ get_search_trends(start_date, end_date, time_unit=date)
+
+NaverHubShoppingClient
+  └─ get_keyword_trends(start_date, end_date, time_unit=date)
 
 NaverSearchAdClient
   └─ get_related_keywords()
@@ -85,6 +90,8 @@ signature = Base64(HMAC_SHA256(secret_utf8, message_utf8))
 | SearchAd 키워드 | 24시간 | 변동이 실시간일 필요 없음, 429 완화 |
 | API HUB Search `total` | 6~24시간 | 문서 수 변동과 쿼터 균형 |
 | Search Trend | 24시간 | 과거 시계열은 자주 변하지 않음 |
+| 일 단위 급상승 Trend/Shopping | 6시간 | 완료된 일 단위 비교와 수동 최신 수집 균형 |
+| News 최신순 표본 | 15분 | 최근 기사 시각 반영, 검색 API 호출 억제 |
 | SERP DOM snapshot | 1~6시간 | 순위 변동 관찰 목적 |
 | Blog 공개 정보 | 6~24시간 | 공감·댓글 변동 가능 |
 
@@ -99,6 +106,28 @@ signature = Base64(HMAC_SHA256(secret_utf8, message_utf8))
 7. UI에서 강제 새로고침은 별도 액션으로 제공.
 
 구현 계약상 cache hit는 사용량을 늘리지 않는다. 외부 전송은 일·월 한도를 원자적으로 예약한 뒤에만 수행하며 200 외의 4xx, 429 재시도, transport 실패도 시도 횟수로 집계한다. `Retry-After`는 초 단위와 HTTP-date 형식을 지원하고 provider별 RPS pacing과 동시성 제한을 함께 적용한다.
+
+## 연관 추천·급상승 API
+
+### `POST /v1/keywords/suggest`
+
+- 한글/CJK 2자 또는 그 외 3자 이상, `limit<=8`만 허용합니다.
+- Extension은 700ms debounce와 AbortController를 적용하고 SearchAd 24시간 cache를 사용합니다.
+- SearchAd 실패 시 Extension의 최근 키워드 후보는 유지하며 자동 강제 새로고침하지 않습니다.
+
+### `POST /v1/research/rising`
+
+- mode: `general | local | shopping | news`
+- candidate: SearchAd 검색량 보조 정렬 최대 20개
+- window: KST 기준 오늘을 제외한 완료 14일, `recent7` 대 `previous7`
+- batch: Search Trend 또는 Shopping Insight 5개씩 최대 4회
+- news: 추세 상위 5개만 `sort=date&display=100`
+- budget: SearchAd 1 + Trend/Shopping 4 + News 5 = 최대 10회
+- persistence: `discovery_runs`에 정규화 결과와 `freshness-v1`만 저장하며 인증 header·secret·기사 전문은 저장하지 않습니다.
+
+`GET /v1/research/rising/latest`는 같은 mode/seed/region/category의 마지막 로컬 수집 결과를 반환하며 외부 API를 호출하지 않습니다.
+
+Search Trend ratio는 같은 요청 범위의 상대지수입니다. 변화율은 한 keyword series 안에서만 계산하고, 이전 평균 0에서 최근 값이 생기면 무한 퍼센트 대신 `new`로 반환합니다. 각 7일 구간 6일 이상, 전체 12/14일 이상 관측되지 않으면 `insufficient`입니다. 뉴스는 전체 발생량이 아니라 최대 100건 표본이므로 `news_7d_sample_count`와 `sample_capped`를 함께 표시합니다.
 
 ## API 스모크 테스트
 

@@ -4,6 +4,8 @@ import type {
   CommercialResponse,
   ResearchGraphNode,
   ResearchGraphResponse,
+  RisingMode,
+  RisingResponse,
   SpecializedResponse,
   WatchlistItem,
 } from '@ncos/contracts';
@@ -12,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { CoreClient, CoreError } from '~/lib/core';
 import { useSettings } from '~/lib/settings';
 
-type WorkspaceView = 'graph' | 'watchlist' | 'specialized' | 'performance';
+type WorkspaceView = 'graph' | 'rising' | 'watchlist' | 'specialized' | 'performance';
 
 const COLORS = ['#059669', '#2563eb', '#7c3aed', '#db2777', '#d97706', '#0891b2', '#475569'];
 
@@ -43,7 +45,7 @@ export default function App() {
   const settings = useSettings();
   const params = new URLSearchParams(window.location.search);
   const [keyword, setKeyword] = useState(params.get('keyword') ?? '');
-  const snapshotId = Number(params.get('snapshot_id')) || null;
+  const [snapshotId, setSnapshotId] = useState<number | null>(Number(params.get('snapshot_id')) || null);
   const [view, setView] = useState<WorkspaceView>('graph');
   const [graph, setGraph] = useState<ResearchGraphResponse | null>(null);
   const [selectedId, setSelectedId] = useState('');
@@ -54,6 +56,9 @@ export default function App() {
   const [specialMode, setSpecialMode] = useState<'local' | 'shopping' | 'image'>('local');
   const [shoppingCategory, setShoppingCategory] = useState('');
   const [performance, setPerformance] = useState<AdPerformanceResponse | null>(null);
+  const [rising, setRising] = useState<RisingResponse | null>(null);
+  const [risingMode, setRisingMode] = useState<RisingMode>('general');
+  const [risingRegion, setRisingRegion] = useState('');
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -69,6 +74,18 @@ export default function App() {
     queryFn: () => client.listWatchlist(),
     enabled: settings.loaded && !!settings.token && view === 'watchlist',
   });
+
+  useEffect(() => {
+    if (view !== 'rising' || !settings.token) return;
+    if (risingMode === 'local' && !risingRegion.trim()) { setRising(null); return; }
+    if (risingMode === 'shopping' && !shoppingCategory.trim()) { setRising(null); return; }
+    if (risingMode !== 'local' && !keyword.trim()) { setRising(null); return; }
+    let active = true;
+    void client.latestRising({ seed: keyword, mode: risingMode, region: risingRegion, category: shoppingCategory })
+      .then((response) => { if (active) setRising(response.run); })
+      .catch(() => { if (active) setRising(null); });
+    return () => { active = false; };
+  }, [client, keyword, risingMode, risingRegion, settings.token, shoppingCategory, view]);
 
   const selected = graph?.nodes.find((node) => node.id === selectedId) ?? graph?.nodes[0] ?? null;
 
@@ -106,6 +123,33 @@ export default function App() {
     });
   }
 
+  async function collectRising() {
+    if (risingMode === 'local' && !risingRegion.trim()) { setNotice('지역명을 입력하세요.'); return; }
+    if (risingMode === 'shopping' && !shoppingCategory.trim()) { setNotice('쇼핑 category code를 입력하세요.'); return; }
+    if (risingMode !== 'local' && !keyword.trim()) { setNotice('주제 키워드를 입력하세요.'); return; }
+    if (!window.confirm('최근 14일 추세와 뉴스 표본을 수집합니다. 최대 10회 provider 호출을 진행할까요?')) return;
+    await run('rising', async () => setRising(await client.rising({
+      seed: keyword,
+      mode: risingMode,
+      region: risingRegion,
+      category: shoppingCategory,
+      candidate_limit: 20,
+      force_refresh: true,
+    })));
+  }
+
+  async function analyzeRisingKeyword(nextKeyword: string) {
+    await run('rising-analyze', async () => {
+      const analyzed = await client.analyze(nextKeyword, null);
+      setKeyword(analyzed.keyword);
+      setSnapshotId(analyzed.snapshot_id);
+      setGraph(null);
+      setSelectedId('');
+      setView('graph');
+      setNotice(`${analyzed.keyword} 재분석을 완료했습니다. 새 snapshot #${analyzed.snapshot_id}`);
+    });
+  }
+
   const providerEntries = Object.entries(capabilities.data?.providers ?? {});
   const searchadBlocked = capabilities.data?.providers.searchad?.quota?.blocked ?? false;
   const trendBlocked = capabilities.data?.providers.hub_trend?.quota?.blocked ?? false;
@@ -136,6 +180,7 @@ export default function App() {
           <nav className="space-y-1">
             {([
               ['graph', '키워드 맵'],
+              ['rising', '급상승'],
               ['watchlist', 'Watchlist'],
               ['specialized', '특화 분석'],
               ['performance', '광고 성과'],
@@ -176,6 +221,21 @@ export default function App() {
             audience={audience}
             searchadBlocked={searchadBlocked}
             trendBlocked={trendBlocked}
+          />
+        )}
+        {view === 'rising' && (
+          <RisingWorkspace
+            result={rising}
+            mode={risingMode}
+            region={risingRegion}
+            category={shoppingCategory}
+            busy={busy}
+            onMode={(value) => { setRisingMode(value); setRising(null); }}
+            onRegion={setRisingRegion}
+            onCategory={setShoppingCategory}
+            onCollect={() => void collectRising()}
+            onAnalyze={(value) => void analyzeRisingKeyword(value)}
+            quotaBlocked={searchadBlocked || searchBlocked || (risingMode === 'shopping' ? shoppingBlocked : trendBlocked)}
           />
         )}
         {view === 'watchlist' && (
@@ -312,6 +372,37 @@ export function CommercialTable({ result }: { result: CommercialResponse }) {
 
 export function AudienceTable({ result }: { result: AudienceResponse }) {
   return <section className="mt-3 rounded-xl bg-white p-4"><h2 className="font-semibold">타깃 상대 추세</h2><p className="mt-1 rounded bg-amber-50 p-2 text-[10px] text-amber-800">{result.warning}</p><div className="mt-3 grid gap-3 md:grid-cols-3">{Object.entries(result.segments).map(([dimension, rows]) => <div key={dimension}><h3 className="text-xs font-semibold">{dimension}</h3><ul className="mt-1 space-y-1 text-[11px]">{rows.map((row) => <li key={row.label} className="flex justify-between rounded bg-slate-50 px-2 py-1"><span>{row.label}</span><span>{row.points.at(-1)?.ratio.toFixed(1) ?? '결측'}</span></li>)}</ul></div>)}</div></section>;
+}
+
+const DIRECTION_LABEL: Record<string, string> = { new: '신규', rising: '상승', steady: '보합', falling: '하락', insufficient: '자료 부족' };
+
+export function RisingWorkspace({ result, mode, region, category, busy, onMode, onRegion, onCategory, onCollect, onAnalyze, quotaBlocked }: { result: RisingResponse | null; mode: RisingMode; region: string; category: string; busy: string; onMode: (mode: RisingMode) => void; onRegion: (value: string) => void; onCategory: (value: string) => void; onCollect: () => void; onAnalyze: (keyword: string) => void; quotaBlocked: boolean }) {
+  return (
+    <section className="min-w-0 p-4">
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {([['general', '일반'], ['local', '지역'], ['shopping', '쇼핑'], ['news', '뉴스']] as const).map(([value, label]) => <button key={value} className={`rounded-lg px-3 py-2 text-xs font-semibold ${mode === value ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-600'}`} onClick={() => onMode(value)}>{label}</button>)}
+          {mode === 'local' && <input className="rounded-lg border border-slate-300 px-3 py-2 text-xs" value={region} onChange={(event) => onRegion(event.target.value)} placeholder="지역명 (예: 성수)" />}
+          {mode === 'shopping' && <input className="rounded-lg border border-slate-300 px-3 py-2 text-xs" value={category} onChange={(event) => onCategory(event.target.value)} placeholder="Shopping category code" />}
+          <button className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40" disabled={!!busy || quotaBlocked || (mode === 'local' && !region.trim()) || (mode === 'shopping' && !category.trim())} onClick={onCollect}>{busy === 'rising' ? '수집 중…' : '최신 수집 · 최대 10회'}</button>
+        </div>
+        <div className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
+          <b>입력 주제 기반 급상승 후보</b>
+          <p className="mt-1">최근 7일과 이전 7일의 상대 추세를 비교합니다. NAVER 공식 실시간 인기 검색어 순위나 절대 검색량이 아닙니다.</p>
+        </div>
+        {result && <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500"><span>기간 {result.comparison_window.start_date}~{result.comparison_window.end_date}</span><span>수집 {new Date(result.collected_at).toLocaleString()}</span><span>호출 {result.actual_calls}/{result.estimated_calls}</span><span>상태 {result.status}</span></div>}
+      </div>
+
+      {result && result.candidates.length > 0 ? (
+        <div className="mt-3 overflow-x-auto rounded-xl bg-white">
+          <table className="w-full min-w-[900px] text-xs">
+            <thead><tr className="text-left text-slate-400"><th className="p-3">키워드</th><th>방향</th><th className="text-right">이전 7일</th><th className="text-right">최근 7일</th><th className="text-right">상승률</th><th className="text-right">뉴스 표본</th><th className="text-right">최신성</th><th>신뢰도</th><th>데이터</th></tr></thead>
+            <tbody>{result.candidates.map((candidate) => <tr key={candidate.keyword} className="border-t border-slate-100 hover:bg-slate-50"><td className="p-3"><button className="font-semibold text-indigo-700 hover:underline" disabled={busy === 'rising-analyze'} onClick={() => onAnalyze(candidate.keyword)}>{candidate.keyword}</button><span className="ml-2 text-[10px] text-slate-400">{candidate.monthly_searches?.toLocaleString() ?? (candidate.volume_masked ? '10 미만' : '검색량 결측')}</span></td><td className={candidate.direction === 'rising' || candidate.direction === 'new' ? 'text-rose-600' : candidate.direction === 'falling' ? 'text-sky-600' : 'text-slate-500'}>{DIRECTION_LABEL[candidate.direction]}</td><td className="text-right tabular-nums">{candidate.previous7_avg?.toFixed(1) ?? '—'}</td><td className="text-right tabular-nums">{candidate.recent7_avg?.toFixed(1) ?? '—'}</td><td className="text-right tabular-nums">{candidate.direction === 'new' ? '신규' : candidate.growth_rate == null ? '—' : `${candidate.growth_rate > 0 ? '+' : ''}${candidate.growth_rate}%`}</td><td className="text-right tabular-nums" title="최신순 최대 100건에서 최근 7일 기사 중복을 제거한 표본입니다.">{candidate.news_7d_sample_count ?? '—'}{candidate.sample_capped ? '+' : ''}</td><td className="text-right font-bold tabular-nums">{candidate.freshness_score ?? '—'}</td><td>{candidate.confidence}</td><td className="text-[10px] text-slate-400">추세 {candidate.data_status.trend} · 뉴스 {candidate.data_status.news}</td></tr>)}</tbody>
+          </table>
+        </div>
+      ) : <div className="mt-3 grid min-h-64 place-items-center rounded-xl border border-dashed border-slate-300 bg-white text-center text-slate-400"><div><b className="block text-slate-600">급상승 후보를 수집하세요</b><span className="text-xs">주제·지역·카테고리 조건에 맞는 후보만 생성합니다.</span></div></div>}
+    </section>
+  );
 }
 
 function WatchlistWorkspace({ items, cap, busy, onAdd, onDelete, onRefresh, refreshBlocked }: { items: WatchlistItem[]; cap: number; busy: string; onAdd: () => void; onDelete: (id: number) => void; onRefresh: (ids: number[]) => void; refreshBlocked: boolean }) {

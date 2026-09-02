@@ -1,5 +1,4 @@
-"""BlogType templates (docs/04). V1 activates HOWTO·POLICY·REVIEW for generation;
-the remaining five keep their structure defined but are not wired to the LLM yet."""
+"""BlogType templates (docs/04). All defined blog types support LLM generation."""
 
 from __future__ import annotations
 
@@ -36,7 +35,6 @@ TEMPLATES: dict[BlogType, tuple[TemplateSection, ...]] = {
         TemplateSection("단점", "아쉬운 점을 솔직하게"),
         TemplateSection("결론", "어떤 사람에게 맞는지 정리"),
     ),
-    # structure-only in V1 (docs/04의 8유형 중 나머지)
     BlogType.COMPARISON: (
         TemplateSection("요약", ""), TemplateSection("A 소개", ""), TemplateSection("B 소개", ""),
         TemplateSection("비교표", ""), TemplateSection("추천 대상", ""),
@@ -59,7 +57,7 @@ TEMPLATES: dict[BlogType, tuple[TemplateSection, ...]] = {
     ),
 }
 
-ACTIVE_TYPES = frozenset({BlogType.HOWTO, BlogType.POLICY, BlogType.REVIEW})
+ACTIVE_TYPES = frozenset(BlogType)
 PROMPT_VERSION = "v1"
 
 SYSTEM_PROMPT = (
@@ -82,7 +80,7 @@ def build_prompt(
     min_chars: int = 2500,
 ) -> str:
     if not is_active(blog_type):
-        raise ValueError(f"{blog_type} 템플릿은 V1에서 구조만 정의되어 있습니다 (생성 미지원)")
+        raise ValueError(f"지원하지 않는 블로그 유형입니다: {blog_type}")
     sections = TEMPLATES[blog_type]
     lines = [
         f"다음 조건으로 네이버 블로그 글을 작성하세요.",

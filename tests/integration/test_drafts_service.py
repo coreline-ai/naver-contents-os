@@ -319,19 +319,21 @@ def test_draft_rest_create_get_and_add_version(draft_api):
     assert updated.json()["version"] == 2
 
 
-def test_draft_api_rejects_structure_only_llm_before_generation(draft_api):
+def test_draft_api_supports_series_llm_generation(draft_api):
     client, token, _ = draft_api
     payload = {
         "keyword": "애드포스트 승인",
         "plan_item": {
             **PLAN_ITEM,
             "blog_type": "SERIES",
-            "generation_status": "structure_only",
+            "generation_status": "ready",
         },
         "generation_mode": "llm",
     }
     response = client.post("/v1/drafts", json=payload, headers=_headers(token))
-    assert response.status_code == 422
+    assert response.status_code == 201
+    assert response.json()["provider"] == "fake"
+    assert response.json()["model"] == "fake-model"
 
 
 def test_draft_api_llm_mode_records_provider_and_model(draft_api):

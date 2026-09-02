@@ -127,3 +127,19 @@ class WatchlistItem(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class DiscoveryRun(Base):
+    """One explicit seed-based rising-keyword collection run."""
+
+    __tablename__ = "discovery_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seed: Mapped[str] = mapped_column(String(200), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    region: Mapped[str] = mapped_column(String(100), default="")
+    category: Mapped[str] = mapped_column(String(30), default="")
+    comparison_key: Mapped[str] = mapped_column(String(100), index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    score_version: Mapped[str] = mapped_column(String(20), default="freshness-v1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)

@@ -154,7 +154,11 @@ describe('sidepanel keyword state', () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     browserMock.storage.local.get.mockResolvedValue({
-      'ncos-settings': { coreUrl: 'http://127.0.0.1:3719', token: 'token' },
+      'ncos-settings': {
+        coreUrl: 'http://127.0.0.1:3719',
+        token: 'token',
+        allowLlmWhenSensitiveUnknown: false,
+      },
     });
     browserMock.storage.local.set.mockResolvedValue(undefined);
     browserMock.tabs.query.mockResolvedValue([{ id: 1 }]);
@@ -162,6 +166,7 @@ describe('sidepanel keyword state', () => {
     useSettings.setState({
       coreUrl: 'http://127.0.0.1:3719',
       token: 'token',
+      allowLlmWhenSensitiveUnknown: false,
       loaded: true,
     });
     container = document.createElement('div');
@@ -172,7 +177,46 @@ describe('sidepanel keyword state', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('debounces provider suggestions and renders them after local-first input', async () => {
+    const suggestBodies: Array<{ query: string }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/v1/handshake')) return response({ status: 'ok' });
+        if (url.endsWith('/v1/keywords/suggest')) {
+          suggestBodies.push(JSON.parse(String(init?.body)));
+          return response({
+            query: '러닝화',
+            status: 'ok',
+            data_status: { searchad: 'ok' },
+            suggestions: [{
+              keyword: '러닝화추천', source: 'searchad', monthly_searches: 1200,
+              volume_masked: false, competition: '중간', from_cache: false,
+              collected_at: '2026-09-02T00:00:00Z',
+            }],
+            collected_at: '2026-09-02T00:00:00Z',
+          });
+        }
+        return response({}, 404);
+      }),
+    );
+    await act(async () => root.render(wrapper(<App />)));
+    await settle();
+
+    vi.useFakeTimers();
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="키워드 입력"]')!;
+    await act(async () => setInput(input, '러닝화'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(699); });
+    expect(suggestBodies).toHaveLength(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    await act(async () => { await Promise.resolve(); });
+    expect(suggestBodies).toEqual([{ query: '러닝화', limit: 8 }]);
+    expect(container.textContent).toContain('러닝화추천');
   });
 
   it('clears analysis and draft when the keyword changes', async () => {
@@ -345,7 +389,7 @@ describe('sidepanel keyword state', () => {
     expect(analyzeBodies.at(-1)).toMatchObject({ keyword: '클러스터 키워드', serp: null });
   });
 
-  it('does not treat an unknown sensitive classification as safe for LLM generation', async () => {
+  it('allows an explicit local override when sensitive classification is unavailable', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -374,7 +418,14 @@ describe('sidepanel keyword state', () => {
     await act(async () => setInput(input, '판별 실패'));
     await act(async () => button(container, '분석').click());
     await settle();
-    expect(container.textContent).toContain('민감 키워드 판별을 완료하지 못해');
+    expect(container.textContent).toContain('민감 키워드 판별 API가 응답하지 않았습니다.');
     expect(button(container, 'AI 초안').disabled).toBe(true);
+
+    await act(async () => button(container, '이 기기에서 AI 초안 허용').click());
+    await settle();
+    expect(button(container, 'AI 초안').disabled).toBe(false);
+    expect(browserMock.storage.local.set).toHaveBeenCalledWith(expect.objectContaining({
+      'ncos-settings': expect.objectContaining({ allowLlmWhenSensitiveUnknown: true }),
+    }));
   });
 });

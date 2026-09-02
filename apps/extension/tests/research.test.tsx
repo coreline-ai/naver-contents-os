@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import type { AudienceResponse, CommercialResponse, ResearchGraphResponse } from '@ncos/contracts';
-import { AudienceTable, CommercialTable, OpportunityGraph } from '../entrypoints/research/App';
+import type { AudienceResponse, CommercialResponse, ResearchGraphResponse, RisingResponse } from '@ncos/contracts';
+import { AudienceTable, CommercialTable, OpportunityGraph, RisingWorkspace } from '../entrypoints/research/App';
 
 const graph: ResearchGraphResponse = {
   keyword: '러닝화',
@@ -46,5 +46,28 @@ describe('research workspace visual contracts', () => {
     const html = renderToStaticMarkup(<AudienceTable result={result} />);
     expect(html).toContain('절대 검색량·인구 비중이 아닙니다');
     expect(html).toContain('50.0');
+  });
+
+  it('renders rising evidence without claiming an official realtime ranking', () => {
+    const result: RisingResponse = {
+      run_id: 1, seed: '러닝화', effective_seed: '러닝화', mode: 'general', region: '', category: '', status: 'ok',
+      comparison_window: { start_date: '2026-08-20', recent_start: '2026-08-27', end_date: '2026-09-02' },
+      estimated_calls: 10, actual_calls: 10, score_version: 'freshness-v1', collected_at: '2026-09-02T12:00:00Z',
+      data_status: { searchad: 'ok', trend: 'ok', news: 'ok' }, disclaimer: '공식 순위가 아닙니다.',
+      candidates: [{
+        keyword: '초보러닝화', direction: 'rising', recent7_avg: 30, previous7_avg: 10, growth_rate: 200,
+        trend_score: 100, news_7d_sample_count: 4, sample_capped: false, latest_news_at: '2026-09-02T10:00:00Z',
+        news_score: 60, freshness_score: 86, confidence: 'high', coverage: { observed_days: 14, recent_days: 7, previous_days: 7 },
+        monthly_searches: 1000, volume_masked: false,
+        components: { trend_score: 100, news_volume_score: 50, news_recency_score: 83, news_score: 60, trend_weight: 0.65, news_weight: 0.35, reason: null },
+        data_status: { searchad: 'ok', trend: 'ok', news: 'ok' }, source_meta: {},
+      }],
+    };
+    const html = renderToStaticMarkup(<RisingWorkspace result={result} mode="general" region="" category="" busy="" onMode={() => undefined} onRegion={() => undefined} onCategory={() => undefined} onCollect={() => undefined} onAnalyze={() => undefined} quotaBlocked={false} />);
+    expect(html).toContain('공식 실시간 인기 검색어 순위');
+    expect(html).toContain('최근 7일');
+    expect(html).toContain('최신성');
+    expect(html).toContain('초보러닝화');
+    expect(html).toContain('+200%');
   });
 });

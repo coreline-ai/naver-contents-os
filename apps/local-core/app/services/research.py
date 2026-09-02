@@ -7,14 +7,21 @@ and every provider continues to use the shared cache/quota gateway.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable, TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import CoreError
-from app.models_db import Draft, Keyword, KeywordSnapshot, WatchlistItem
+from app.models_db import DiscoveryRun, Draft, Keyword, KeywordSnapshot, WatchlistItem
+from app.services.freshness import (
+    SCORE_VERSION,
+    combine_freshness,
+    comparison_window,
+    summarize_news,
+    summarize_trend,
+)
 from intelligence.cluster import cluster_keywords
 from intelligence.keyword.models import compact, normalize_keyword
 from providers.models import KeywordMetric, TrendSeries
@@ -34,6 +41,10 @@ GRAPH_ENRICH_CAP = 5
 WATCHLIST_CAP = 50
 ACCOUNT_ADGROUP_CAP = 20
 ACCOUNT_KEYWORD_CAP = 100
+SUGGESTION_CAP = 8
+RISING_CANDIDATE_CAP = 20
+RISING_BATCH_SIZE = 5
+RISING_NEWS_CAP = 5
 
 
 def _iso(value: datetime | str | None = None) -> str:
@@ -98,6 +109,16 @@ def _estimate_index(value, keywords: list[str]) -> dict[str, dict]:
     return result
 
 
+def _aggregate_status(values: list[str], *, empty: str = "unconfigured") -> str:
+    if not values:
+        return empty
+    if all(value == "ok" for value in values):
+        return "ok"
+    if any(value == "ok" for value in values):
+        return "partial"
+    return values[0] if len(set(values)) == 1 else "partial"
+
+
 class ResearchService:
     def __init__(
         self,
@@ -106,12 +127,14 @@ class ResearchService:
         hub_search: NaverHubSearchClient | None,
         hub_trend: NaverHubTrendClient | None,
         hub_shopping: NaverHubShoppingClient | None = None,
+        today: Callable[[], date] | None = None,
     ):
         self._sessions = session_factory
         self._searchad = searchad
         self._hub_search = hub_search
         self._hub_trend = hub_trend
         self._hub_shopping = hub_shopping
+        self._today = today
 
     @staticmethod
     def _safe(call: Callable[[], T]) -> tuple[T | None, str]:
@@ -134,13 +157,13 @@ class ResearchService:
             "collected_at": _iso(),
             "providers": {
                 "hub_search": provider(
-                    self._hub_search, ["search", "preflight", "local", "image"]
+                    self._hub_search, ["search", "preflight", "local", "image", "latest_news"]
                 ),
-                "hub_trend": provider(self._hub_trend, ["trend", "audience"]),
-                "hub_shopping": provider(self._hub_shopping, ["shopping"]),
+                "hub_trend": provider(self._hub_trend, ["trend", "audience", "rising"]),
+                "hub_shopping": provider(self._hub_shopping, ["shopping", "shopping_rising"]),
                 "searchad": provider(
                     self._searchad,
-                    ["keyword_graph", "commercial_estimate", "account_performance"],
+                    ["keyword_graph", "keyword_suggest", "rising_candidates", "commercial_estimate", "account_performance"],
                 ),
             },
             "searchad_access": "read_only",
@@ -183,6 +206,47 @@ class ResearchService:
             "sensitive": adult["value"] if adult else None,
             "data_status": {"errata": errata_status, "adult": adult_status},
             "from_cache": bool(errata and adult and errata["from_cache"] and adult["from_cache"]),
+            "collected_at": _iso(),
+        }
+
+    def suggest(self, query: str, *, limit: int = SUGGESTION_CAP) -> dict:
+        normalized = normalize_keyword(query)
+        capped_limit = max(1, min(SUGGESTION_CAP, int(limit)))
+        if self._searchad is None:
+            return {
+                "query": normalized,
+                "status": "unconfigured",
+                "data_status": {"searchad": "unconfigured"},
+                "suggestions": [],
+                "collected_at": _iso(),
+            }
+        metrics, status = self._safe(lambda: self._searchad.get_related_keywords(normalized))
+        unique: dict[str, KeywordMetric] = {}
+        for metric in metrics or []:
+            key = _metric_key(metric.keyword)
+            if key and key not in unique:
+                unique[key] = metric
+        rows = sorted(
+            unique.values(),
+            key=lambda metric: (_volume(metric) if _volume(metric) is not None else -1, metric.keyword),
+            reverse=True,
+        )[:capped_limit]
+        return {
+            "query": normalized,
+            "status": "ok" if status == "ok" else status,
+            "data_status": {"searchad": status},
+            "suggestions": [
+                {
+                    "keyword": metric.keyword,
+                    "source": "searchad",
+                    "monthly_searches": _volume(metric),
+                    "volume_masked": metric.volume_masked,
+                    "competition": metric.ad_competition,
+                    "from_cache": metric.from_cache,
+                    "collected_at": _iso(metric.collected_at),
+                }
+                for metric in rows
+            ],
             "collected_at": _iso(),
         }
 
@@ -565,6 +629,316 @@ class ResearchService:
                 "collected_at": _iso(),
             }
         return {"mode": "general", "keyword": normalized, "status": "ok", "collected_at": _iso()}
+
+    def _save_discovery_run(
+        self,
+        payload: dict,
+        *,
+        seed: str,
+        mode: str,
+        region: str,
+        category: str,
+        comparison_key: str,
+    ) -> dict:
+        with self._sessions() as session:
+            row = DiscoveryRun(
+                seed=seed,
+                mode=mode,
+                region=region,
+                category=category,
+                comparison_key=comparison_key,
+                payload=payload,
+                score_version=SCORE_VERSION,
+            )
+            session.add(row)
+            session.flush()
+            stored = {**payload, "run_id": row.id}
+            row.payload = stored
+            session.commit()
+            return stored
+
+    def latest_rising(
+        self,
+        *,
+        seed: str = "",
+        mode: str = "general",
+        region: str = "",
+        category: str = "",
+    ) -> dict:
+        normalized_seed = normalize_keyword(seed)
+        normalized_region = normalize_keyword(region)
+        normalized_category = category.strip()
+        with self._sessions() as session:
+            row = session.scalar(
+                select(DiscoveryRun)
+                .where(
+                    DiscoveryRun.seed == normalized_seed,
+                    DiscoveryRun.mode == mode,
+                    DiscoveryRun.region == normalized_region,
+                    DiscoveryRun.category == normalized_category,
+                )
+                .order_by(DiscoveryRun.created_at.desc(), DiscoveryRun.id.desc())
+                .limit(1)
+            )
+            return {"run": row.payload if row else None}
+
+    def rising(
+        self,
+        *,
+        seed: str = "",
+        mode: str = "general",
+        region: str = "",
+        category: str = "",
+        candidate_limit: int = RISING_CANDIDATE_CAP,
+        force_refresh: bool = False,
+    ) -> dict:
+        normalized_seed = normalize_keyword(seed)
+        normalized_region = normalize_keyword(region)
+        normalized_category = category.strip()
+        effective_seed = normalize_keyword(
+            " ".join(value for value in (normalized_region, normalized_seed) if value)
+            if mode == "local"
+            else normalized_seed
+        )
+        limit = max(1, min(RISING_CANDIDATE_CAP, int(candidate_limit)))
+        today_value = self._today() if self._today else None
+        window = comparison_window(today_value)
+        window_json = {key: value.isoformat() for key, value in window.items()}
+        comparison_key = f"date:{window_json['start_date']}:{window_json['end_date']}:{mode}"
+        collected_at = _iso()
+        actual_calls = 0
+
+        metrics: list[KeywordMetric] = []
+        searchad_status = "unconfigured"
+        if self._searchad is not None:
+            values, searchad_status = self._safe(
+                lambda: self._searchad.get_related_keywords(
+                    effective_seed, force_refresh=force_refresh
+                )
+            )
+            actual_calls += 1
+            metrics = values or []
+
+        exact = next(
+            (metric for metric in metrics if _metric_key(metric.keyword) == _metric_key(effective_seed)),
+            None,
+        )
+        if exact is None and searchad_status == "ok":
+            exact = KeywordMetric(keyword=effective_seed)
+        unique: dict[str, KeywordMetric] = {}
+        for metric in metrics:
+            key = _metric_key(metric.keyword)
+            if key and key != _metric_key(effective_seed) and key not in unique:
+                unique[key] = metric
+        related = sorted(
+            unique.values(),
+            key=lambda metric: (_volume(metric) if _volume(metric) is not None else -1, metric.keyword),
+            reverse=True,
+        )
+        selected_metrics = ([exact] if exact else []) + related[: max(0, limit - (1 if exact else 0))]
+
+        candidates: list[dict] = []
+        for metric in selected_metrics:
+            trend = summarize_trend([], today=today_value)
+            candidates.append(
+                {
+                    "keyword": metric.keyword,
+                    **{key: trend[key] for key in ("direction", "recent7_avg", "previous7_avg", "growth_rate", "trend_score", "coverage")},
+                    "news_7d_sample_count": None,
+                    "sample_capped": False,
+                    "latest_news_at": None,
+                    "news_score": None,
+                    "freshness_score": None,
+                    "confidence": "unavailable",
+                    "monthly_searches": _volume(metric),
+                    "volume_masked": metric.volume_masked,
+                    "components": {
+                        "trend_score": None,
+                        "news_volume_score": None,
+                        "news_recency_score": None,
+                        "news_score": None,
+                        "trend_weight": 0.0,
+                        "news_weight": 0.0,
+                        "reason": "insufficient_trend",
+                    },
+                    "data_status": {"searchad": searchad_status, "trend": "unconfigured", "news": "not_collected"},
+                    "source_meta": {
+                        "searchad_collected_at": _iso(metric.collected_at),
+                        "searchad_from_cache": metric.from_cache,
+                        "competition": metric.ad_competition,
+                    },
+                }
+            )
+
+        trend_statuses: list[str] = []
+        trend_rows: dict[str, object] = {}
+        trend_client = self._hub_shopping if mode == "shopping" else self._hub_trend
+        for offset in range(0, len(candidates), RISING_BATCH_SIZE):
+            batch = candidates[offset : offset + RISING_BATCH_SIZE]
+            keywords = [candidate["keyword"] for candidate in batch]
+            if trend_client is None:
+                trend_statuses.append("unconfigured")
+                continue
+            if mode == "shopping":
+                rows, status = self._safe(
+                    lambda keywords=keywords: self._hub_shopping.get_keyword_trends(
+                        normalized_category,
+                        keywords,
+                        time_unit="date",
+                        start_date=window["start_date"],
+                        end_date=window["end_date"],
+                        force_refresh=force_refresh,
+                    )
+                )
+            else:
+                rows, status = self._safe(
+                    lambda keywords=keywords: self._hub_trend.get_search_trends(
+                        [(keyword, [keyword]) for keyword in keywords],
+                        time_unit="date",
+                        start_date=window["start_date"],
+                        end_date=window["end_date"],
+                        force_refresh=force_refresh,
+                    )
+                )
+            actual_calls += 1
+            trend_statuses.append(status)
+            for row in rows or []:
+                name = row.get("title", "") if isinstance(row, dict) else row.keyword_group
+                trend_rows[_metric_key(str(name))] = row
+            for candidate in batch:
+                candidate["data_status"]["trend"] = status
+
+        for candidate in candidates:
+            row = trend_rows.get(_metric_key(candidate["keyword"]))
+            points = row.get("points", []) if isinstance(row, dict) else row.points if row else []
+            trend = summarize_trend(points, today=today_value)
+            for key in ("direction", "recent7_avg", "previous7_avg", "growth_rate", "trend_score", "coverage"):
+                candidate[key] = trend[key]
+            if row is not None:
+                candidate["source_meta"].update(
+                    {
+                        "trend_collected_at": row.get("collected_at") if isinstance(row, dict) else _iso(row.collected_at),
+                        "trend_from_cache": bool(row.get("from_cache", False)) if isinstance(row, dict) else row.from_cache,
+                    }
+                )
+            combined = combine_freshness(
+                trend, None, mode=mode, volume_masked=candidate["volume_masked"]
+            )
+            candidate.update(combined)
+
+        news_statuses: list[str] = []
+        news_candidates = sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate["trend_score"] if candidate["trend_score"] is not None else -1,
+                candidate["growth_rate"] if candidate["growth_rate"] is not None else -1,
+                candidate["monthly_searches"] if candidate["monthly_searches"] is not None else -1,
+            ),
+            reverse=True,
+        )[:RISING_NEWS_CAP]
+        for candidate in news_candidates:
+            if self._hub_search is None:
+                candidate["data_status"]["news"] = "unconfigured"
+                news_statuses.append("unconfigured")
+                continue
+            payload, status = self._safe(
+                lambda candidate=candidate: self._hub_search.search_news_latest(
+                    candidate["keyword"], display=100, force_refresh=force_refresh
+                )
+            )
+            actual_calls += 1
+            news_statuses.append(status)
+            candidate["data_status"]["news"] = status
+            news = summarize_news(payload.get("items", []), today=today_value) if payload else None
+            if news:
+                candidate.update(
+                    {
+                        "news_7d_sample_count": news["news_7d_sample_count"],
+                        "sample_capped": news["sample_capped"],
+                        "latest_news_at": news["latest_news_at"],
+                        "news_score": news["news_score"],
+                    }
+                )
+                candidate["source_meta"].update(
+                    {
+                        "news_collected_at": payload.get("collected_at"),
+                        "news_from_cache": payload.get("from_cache", False),
+                        "news_sample_limit": 100,
+                    }
+                )
+            trend = {
+                key: candidate[key]
+                for key in ("direction", "recent7_avg", "previous7_avg", "growth_rate", "trend_score", "coverage")
+            }
+            candidate.update(
+                combine_freshness(
+                    trend,
+                    news if status == "ok" else None,
+                    mode=mode,
+                    volume_masked=candidate["volume_masked"],
+                )
+            )
+
+        candidates.sort(
+            key=lambda candidate: (
+                candidate["freshness_score"] if candidate["freshness_score"] is not None else -1,
+                candidate["trend_score"] if candidate["trend_score"] is not None else -1,
+                candidate["monthly_searches"] if candidate["monthly_searches"] is not None else -1,
+                candidate["keyword"],
+            ),
+            reverse=True,
+        )
+        trend_status = _aggregate_status(
+            trend_statuses,
+            empty="unconfigured" if trend_client is None else "empty",
+        )
+        news_status = _aggregate_status(
+            news_statuses,
+            empty="unconfigured" if self._hub_search is None else "empty",
+        )
+        status = (
+            "ok"
+            if candidates and any(candidate["freshness_score"] is not None for candidate in candidates)
+            and searchad_status == trend_status == news_status == "ok"
+            else "partial"
+            if candidates
+            else searchad_status
+        )
+        estimated_calls = min(
+            10,
+            (1 if self._searchad is not None else 0)
+            + math.ceil(len(candidates) / RISING_BATCH_SIZE)
+            + min(RISING_NEWS_CAP, len(candidates)),
+        )
+        response = {
+            "run_id": None,
+            "seed": normalized_seed,
+            "effective_seed": effective_seed,
+            "mode": mode,
+            "region": normalized_region,
+            "category": normalized_category,
+            "status": status,
+            "comparison_window": window_json,
+            "estimated_calls": estimated_calls,
+            "actual_calls": min(10, actual_calls),
+            "score_version": SCORE_VERSION,
+            "collected_at": collected_at,
+            "data_status": {
+                "searchad": searchad_status,
+                "trend": trend_status,
+                "news": news_status,
+            },
+            "candidates": candidates,
+            "disclaimer": "입력 주제 기반 후보이며 NAVER 공식 실시간 인기 검색어 순위가 아닙니다.",
+        }
+        return self._save_discovery_run(
+            response,
+            seed=normalized_seed,
+            mode=mode,
+            region=normalized_region,
+            category=normalized_category,
+            comparison_key=comparison_key,
+        )
 
     def _watchlist_view(self, session: Session, row: WatchlistItem) -> dict:
         keyword = session.get(Keyword, row.keyword_id)
