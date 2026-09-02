@@ -1,6 +1,6 @@
 # 09. 현재 구현 품질 평가
 
-평가 기준일: **2026-09-01**
+평가 기준일: **2026-09-02**
 상세 근거: [14. 구현 사항 전문가 상세 분석](./14_implementation_expert_review.md)
 
 ## 최종 판단
@@ -22,12 +22,12 @@
 | DB | 구현 완료 | Alembic 3개 revision, snapshot/draft/job/lineage |
 | Opportunity Score | 실험용 V1 | 설명 가능, coverage/confidence 고도화 필요 |
 | 15편 Planner | 구현 완료 | generation status로 LLM 지원 여부 분리 |
-| Extension | 구현 완료 | typecheck·10 tests·production build 통과 |
+| Extension | 구현 완료 | stale 요청 차단, typecheck·13 tests·production build 통과 |
 | Draft API | 구현 완료 | create/get/add-version, skeleton/Ollama mode |
 | Blog Inspector | 구현 완료 | 파서와 사이드패널 표시 연결 |
 | SmartEditor | 검증 대기 | health/save signal 단위 테스트, live E2E 미수행 |
 | 이미지 자동화 | 후속 범위 | 현재 텍스트·태그 V1에서 제외 |
-| 운영 배포 | 부분 준비 | README·검증 script 제공, CI/패키징은 후속 |
+| 운영 배포 | 부분 준비 | README·검증 script·non-live CI 제공, 패키징은 후속 |
 
 ## 품질 강점
 
@@ -51,13 +51,16 @@
 ## 최신 검증
 
 ```text
-Python unit/integration  91 passed
-NAVER live smoke          3 passed
-Extension test           10 passed
+Python unit/integration 117 passed (4 live smoke deselected)
+Extension test           13 passed
 TypeScript typecheck      PASS
 WXT production build      PASS
-총 자동 검증             104 passed
+Clean DB migration        f2c91d8a7b42 (head)
+Tracked secret/runtime    PASS
+총 non-live 자동 검증    130 passed
 ```
+
+NAVER live smoke와 OpenAI 호환 LLM smoke는 자격증명·쿼터·외부 전송이 필요한 별도 검증이며, 이번 안정화에서는 재실행하지 않았다. 기존 실호출 기록은 [구현 전문가 상세 분석](./14_implementation_expert_review.md)의 이력으로 유지한다.
 
 ## 출시 게이트
 

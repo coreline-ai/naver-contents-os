@@ -1,0 +1,58 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  non-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.12"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          version: "0.11.29"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up pnpm 11 and Node 24
+        uses: pnpm/setup@v2
+        with:
+          version: "11.13.1"
+          runtime: node@24
+          install: false
+          cache: true
+
+      - name: Check tracked secret and runtime paths
+        run: bash scripts/check_no_tracked_runtime.sh
+
+      - name: Install locked dependencies
+        run: |
+          uv sync --frozen --no-managed-python
+          pnpm install --frozen-lockfile
+
+      - name: Run non-live verification
+        run: ./scripts/verify_all.sh

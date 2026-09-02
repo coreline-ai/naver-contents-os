@@ -140,6 +140,7 @@ def create_draft(
     request: DraftCreateRequest,
     service_factory: Callable[[bool], DraftService] = Depends(get_draft_service_factory),
 ) -> dict:
+    service: DraftService | None = None
     try:
         service = service_factory(request.generation_mode == "llm")
         return service.create_draft(
@@ -149,7 +150,8 @@ def create_draft(
             snapshot_id=request.snapshot_id,
         )
     except LLMError as exc:
-        raise errors.LLMUnavailableError(str(exc), provider="ollama") from exc
+        provider = service.provider_name if service is not None else "llm"
+        raise errors.LLMUnavailableError(str(exc), provider=provider) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "invalid_draft", "message": str(exc)}) from exc
 

@@ -1,6 +1,6 @@
 # HANDOFF — 네이버 콘텐츠 운영 OS
 
-작성일: `2026-09-02` · 기준 커밋: `26af3e5` (main) · 테스트: pytest 112 + vitest 10 전부 통과
+작성일: `2026-09-02` · 기준: `main` 안정화 시작 커밋 `0ef613b` 이후 반영분 · 테스트: pytest 117 + vitest 13 전부 통과
 
 이 문서 하나로 다른 개발자/에이전트가 이어서 작업할 수 있도록 프로젝트 전체 상태를 정리한다.
 
@@ -9,7 +9,7 @@
 키워드 하나를 입력하면 **검색량·트렌드·경쟁 규모 수집 → Opportunity Score → 15편 콘텐츠 플랜 → LLM 초안 → SmartEditor 임시저장**까지 이어지는 로컬 우선 파이프라인. 자동 공개 발행은 하지 않는다 — **최종 발행은 항상 사람이 결정** (프로젝트 전체의 제1원칙).
 
 - 설계 문서: [docs/INDEX.md](docs/INDEX.md) (01~13, 특히 [13 착수 체크리스트](docs/13_development_kickoff_checklist.md))
-- 개발 이력: [dev-plan/implement_20260901_205331.md](dev-plan/implement_20260901_205331.md) (V1, Phase 1~6 완료) · [dev-plan/implement_20260901_222443.md](dev-plan/implement_20260901_222443.md) (V2 LLM, 완료)
+- 개발 이력: [dev-plan/implement_20260901_205331.md](dev-plan/implement_20260901_205331.md) (V1, Phase 1~6 완료) · [dev-plan/implement_20260901_222443.md](dev-plan/implement_20260901_222443.md) (V2 LLM, 완료) · [dev-plan/implement_20260902_095019.md](dev-plan/implement_20260902_095019.md) (현재 기능 안정화, Phase 1~5 완료) · [dev-plan/implement_20260902_102516.md](dev-plan/implement_20260902_102516.md) (실브라우저 안전 검증, Phase 1~2 완료·Chrome 제어 연결 대기)
 
 ## 2. 저장소 구조
 
@@ -20,7 +20,7 @@ packages/contracts/     확장↔코어 공유 TypeScript 타입
 python/providers/       외부 데이터: naver_hub(검색 5채널+트렌드), searchad(검색량), llm(Ollama/OpenAI호환), gateway(캐시·429·quota)
 python/intelligence/    Opportunity Score v1, 질문 추출, bigram 클러스터
 python/planner/         15편 플래너, BlogType 8종 템플릿(HOWTO/POLICY/REVIEW 생성 활성)
-python/publisher/       SmartEditor 자동화: selectors(중앙 관리), health(7게이트), editor, jobs(상태기계), browser(CDP)
+python/publisher/       SmartEditor 자동화: selectors(중앙 관리), health(6게이트), editor, jobs(상태기계), browser(CDP)
 scripts/                verify_api_hub.py, verify_searchad.py, run_publish.py (E2E 러너)
 tests/                  unit / integration / smoke(-m smoke, 실호출) / fixtures
 docs/dev-lessons/       재사용 교훈 2건 (아래 §6)
@@ -44,7 +44,8 @@ uv run pytest -q                 # unit+integration (smoke 제외)
 uv run pytest -m smoke tests/smoke  # 실호출 (자격증명 필요, 쿼터 소모)
 pnpm --filter extension test     # vitest 파서 회귀
 
-# E2E: 초안 생성 → SmartEditor 임시저장 (Chrome을 --remote-debugging-port=9222로 실행, 네이버 로그인 상태)
+# E2E: 전용 자동화 profile Chrome 실행 → 별도 창에서 네이버 로그인 → 임시저장
+./scripts/start_chrome_automation.sh
 uv run python scripts/run_publish.py --keyword "애드포스트 승인" --blog-id <내블로그ID> [--no-llm] [--dry-run]
 ```
 
@@ -79,21 +80,22 @@ uv run python scripts/run_publish.py --keyword "애드포스트 승인" --blog-i
 1. **HUB 검색 API는 JSON을 `Content-Type: text/plain`으로 반환** — content-type을 절대 신뢰하지 말고 본문 파싱. (DL-…42b6f755, 회귀 테스트 있음)
 2. **SearchAd keywordstool은 공백 포함 키워드를 4xx로 거부** — 클라이언트가 공백 제거 후 전송. (DL-…c0f87a11)
 
-기타: SearchAd 검색량 `"< 10"`은 0이 아닌 masked/missing으로 처리. Trend `ratio`는 상대값(절대 검색량 아님). API 한도는 하드코딩 금지 — Gateway가 자체 월한도(설정값)로 차단·80% 경고. 새 계획 작성 시 `dev-plan` 스킬의 `dev_lesson.py find`로 교훈 검색부터.
+기타: SearchAd 검색량 `"< 10"`은 0이 아닌 masked/missing으로 처리. Trend `ratio`는 상대값(절대 검색량 아님). API 한도는 하드코딩 금지 — Gateway가 자체 월한도(설정값)로 차단·80% 경고. 새 계획 작성 시 `docs/dev-lessons/`의 활성 교훈을 먼저 확인한다.
 
 ## 7. 남은 작업 (사람 손 필요)
 
 | 우선 | 항목 | 방법 |
 |---|---|---|
 | 1 | 확장 실브라우저 육안 확인 | `pnpm build:ext` → 확장 로드 → 토큰 입력 → 네이버 검색 페이지에서 "현재 검색어 가져오기"·분석 표시 확인 |
-| 2 | SmartEditor 임시저장 실검증 | Chrome `--remote-debugging-port=9222` + `run_publish.py`. **selector는 실DOM 미검증 추정값** — health check가 실패 항목을 알려주면 [python/publisher/selectors.py](python/publisher/selectors.py) 보정 (게이트가 있어 오입력 위험 없음) |
+| 2 | SmartEditor 임시저장 실검증 | `./scripts/start_chrome_automation.sh`로 전용 profile Chrome 실행·로그인 후 `run_publish.py`. **selector는 실DOM 미검증 추정값** — health check가 실패 항목을 알려주면 [python/publisher/selectors.py](python/publisher/selectors.py) 보정 (게이트가 있어 오입력 위험 없음) |
 | 3 | API HUB 콘솔 한도·알림 | `Application → 한도 및 알림`에서 일·월 한도 + 통보 대상자 등록 |
 | 4 | (선택) Ollama 모델 설치 | 로컬 LLM 초안용 `ollama pull <model>` |
 
-V2.1 후보(계획 문서 잔여 리스크 참조): 스트리밍 표시, 본문 길이 미달 이어쓰기, 사이드패널 초안 생성 UI, Whale 지원, CI + fixture 회귀 게이트.
+후속 확장 후보(이번 안정화 범위 밖): 스트리밍 표시, 본문 길이 미달 이어쓰기, Opportunity Score confidence, Whale 실호환 검증.
 
 ## 8. 협업 시 주의
 
-- 병행 세션이 존재했음: 품질 보강(Gateway 결과 객체화, 스키마 검증, NFKC 정규화, 초안 REST API `/v1/drafts`)이 `3dfd023`에 커밋됨. **파일 수정 전 최신 상태를 다시 읽을 것.**
+- 현재 안정화 작업은 `0ef613b`에서 시작했으며 Provider 오류 강하 회귀, Draft/Publisher 예외 종료, Extension stale 요청 차단, non-live CI를 보강했다. 인계 시 `git status`와 [현재 안정화 계획](dev-plan/implement_20260902_095019.md)을 함께 확인한다.
 - 커밋 규칙: Phase/작업 단위 커밋, `.env`·`data/`는 절대 커밋 금지 (커밋 전 `git ls-files | grep -x .env` 확인 습관).
 - 계획 문서의 체크박스는 실제 진행과 일치시켜야 함 (dev-plan 스킬 규칙).
+- GitHub Actions의 `Verify` workflow는 Secret 없는 non-live 검증만 수행한다. smoke·Ollama·Codex proxy·Chrome·SmartEditor 실동작은 CI에서 실행하지 않는다.

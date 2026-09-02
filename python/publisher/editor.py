@@ -96,7 +96,7 @@ class SmartEditorAdapter:
         try:
             if click_and_confirm():
                 return
-        except (EditorError, LookupError, RuntimeError):
+        except Exception:  # noqa: BLE001 - browser drivers use their own exception hierarchy
             pass
         # fallback: clear layers/focus, re-find, retry once.
         self._page.press("Escape")
@@ -104,6 +104,6 @@ class SmartEditorAdapter:
         try:
             if click_and_confirm():
                 return
-        except (EditorError, LookupError, RuntimeError) as exc:
+        except Exception as exc:  # noqa: BLE001 - normalize browser errors for job history
             raise EditorError("draft_save", "draft save retry failed") from exc
         raise EditorError("draft_save", "draft save success signal not observed")

@@ -46,6 +46,20 @@ class DraftService:
         self._sessions = session_factory
         self._llm = llm
 
+    @property
+    def provider_name(self) -> str:
+        return self._llm.name if self._llm is not None else "skeleton"
+
+    def _validate_snapshot(self, keyword_text: str, snapshot_id: int | None) -> None:
+        """Reject invalid lineage before an external LLM call can consume time or quota."""
+        if snapshot_id is None:
+            return
+        with self._sessions() as session:
+            keyword = session.scalar(select(Keyword).where(Keyword.text == keyword_text))
+            snapshot = session.get(KeywordSnapshot, snapshot_id)
+            if keyword is None or snapshot is None or snapshot.keyword_id != keyword.id:
+                raise ValueError("snapshot_id does not belong to keyword")
+
     def create_draft(
         self,
         keyword_text: str,
@@ -55,6 +69,7 @@ class DraftService:
         snapshot_id: int | None = None,
     ) -> dict:
         blog_type = BlogType(plan_item["blog_type"])
+        self._validate_snapshot(keyword_text, snapshot_id)
         if self._llm is not None:
             # raises for structure-only types: generation is V1-active for HOWTO/POLICY/REVIEW
             prompt = build_prompt(
@@ -70,7 +85,7 @@ class DraftService:
             title, body = plan_item["title"], skeleton_body(blog_type)
         title = clean_markdown(title)
         body = clean_markdown(body)
-        provider_name = self._llm.name if self._llm is not None else "skeleton"
+        provider_name = self.provider_name
         model_name = getattr(self._llm, "model_name", "") if self._llm is not None else ""
 
         with self._sessions() as session:

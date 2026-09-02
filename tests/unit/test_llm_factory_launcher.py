@@ -138,8 +138,9 @@ def test_deps_maps_factory_failure_to_llm_unavailable(tmp_path, monkeypatch):
 
     deps.reset_caches()
     try:
-        with pytest.raises(errors.LLMUnavailableError):
+        with pytest.raises(errors.LLMUnavailableError) as exc:
             deps.get_draft_service(use_llm=True)
+        assert exc.value.provider == "mystery"
         assert deps.get_draft_service(use_llm=False) is not None  # skeleton path unaffected
     finally:
         deps.reset_caches()

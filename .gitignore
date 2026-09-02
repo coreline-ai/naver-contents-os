@@ -2,6 +2,7 @@
 .env.local
 .env.*.local
 node_modules/
+.pnpm-store/
 dist/
 build/
 .DS_Store

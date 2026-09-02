@@ -6,6 +6,22 @@
 
 ## 후속 안정화 구현 상태
 
+### 2026-09-02 현재 기능 안정화
+
+`dev-plan/implement_20260902_095019.md`의 Phase 1~5에서 신규 기능을 추가하지 않고 다음 회귀를 보강했다.
+
+- Analyze 통합 경로의 provider schema·transport·지속 429 부분 강하 검증
+- Draft LLM 오류 provider 정합성과 snapshot 선검증, 실패 시 부분 row 부재 확인
+- 예상 밖 브라우저 예외에서도 Publisher Job을 실패 이력으로 종료하고 임시저장 fallback 유지
+- Extension keyword/SERP 변경과 지연 응답에서 이전 분석·초안이 복원되지 않도록 request epoch 검증
+- Secret 없는 non-live GitHub Actions와 clean DB migration·runtime 파일 추적 검사
+
+최신 non-live 검증은 Python 117개와 Extension 13개로 **130개 통과**했다. TypeScript typecheck, WXT production build, compileall, Alembic clean DB `f2c91d8a7b42 (head)`도 통과했다. FastAPI TestClient import의 Starlette deprecation warning 1건은 알려진 의존성 경고로 남아 있다.
+
+아래 최초 분석의 발견 항목은 당시 상태를 보존한 이력이다. 현재 판정은 이 절과 [09. 현재 구현 품질 평가](./09_quality_assessment.md)를 우선한다.
+
+### 2026-09-01 1차 후속 안정화
+
 이 문서의 최초 분석 이후 `dev-plan/implement_20260901_222039.md`에 따라 다음 항목을 구현했다.
 
 - Extension TypeScript 오류 13개 해결, WXT `browser` API 전환, version `0.2.0`
@@ -19,7 +35,7 @@
 - 임시저장 success signal 미확인 시 Job 실패 처리
 - Chrome 136+ 전용 automation profile 실행 스크립트
 
-최신 자동 검증은 Python non-smoke 91개, live smoke 3개, Extension 10개로 **104개 통과**했다. 이 문서 아래의 최초 발견 항목은 분석 이력으로 유지한다.
+당시 자동 검증은 Python non-smoke 91개, live smoke 3개, Extension 10개로 **104개 통과**했다. 이 문서 아래의 최초 발견 항목은 분석 이력으로 유지한다.
 
 현재 남은 차단 항목은 사용자의 명시적 승인과 테스트 블로그가 필요한 **실브라우저 Extension 육안 확인 및 SmartEditor 임시저장 인수 테스트**다. 이미지 업로드는 이번 안정화 범위에서 제외했다.
 

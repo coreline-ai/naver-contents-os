@@ -12,8 +12,9 @@
 - Opportunity Score v1, 질문 추출, cluster, 15편 plan
 - WXT/React 사이드패널: 분석, SERP 첨부, Blog Inspector, 초안 생성
 - Draft REST API, 버전 이력, snapshot·prompt·provider lineage
-- Ollama provider와 LLM 없는 skeleton 초안
+- Ollama·OpenAI 호환 provider와 LLM 없는 skeleton 초안
 - SmartEditor title/body/tag 입력과 **임시저장 전용** Job
+- Secret 없는 non-live 검증 GitHub Actions
 
 이미지 업로드·자동 공개·댓글·공감·다계정 자동화는 현재 범위에 포함되지 않습니다.
 
@@ -72,6 +73,8 @@ ollama pull qwen3:8b
 
 원하는 model은 `.env`의 `OLLAMA_MODEL`로 고정할 수 있습니다.
 
+`LLM_PROVIDER=openai_compat` 경로는 명시적으로 설정한 경우에만 사용됩니다. 설정과 데이터 외부 전송 주의사항은 [API 및 계정 설정](./docs/10_api_and_account_setup.md)을 확인하세요.
+
 ## SmartEditor 임시저장 준비
 
 Chrome 136+에서는 기본 Chrome profile에 remote debugging을 사용할 수 없습니다. 전용 profile을 실행합니다.
@@ -99,8 +102,10 @@ uv run python scripts/run_publish.py \
 ./scripts/verify_all.sh --live   # NAVER API smoke 포함
 ```
 
+기본 검증은 외부 API, Ollama, Codex proxy, Chrome, SmartEditor를 호출하지 않습니다. 현재 기준으로 Python non-live 117개와 Extension 13개 테스트가 통과합니다.
+
 ## 주요 문서
 
 - [문서 인덱스](./docs/INDEX.md)
 - [구현 전문가 분석](./docs/14_implementation_expert_review.md)
-- [현재 안정화 개발 계획](./dev-plan/implement_20260901_222039.md)
+- [현재 안정화 개발 계획](./dev-plan/implement_20260902_095019.md)

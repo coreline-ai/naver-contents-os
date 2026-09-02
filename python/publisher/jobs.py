@@ -55,7 +55,17 @@ class PublishJobRunner:
 
         # gate: no input starts unless every health check passes (docs/05)
         record("health_check", "running")
-        report: HealthReport = self._run_health(page, blog_id)
+        try:
+            report: HealthReport = self._run_health(page, blog_id)
+        except Exception as exc:  # noqa: BLE001 - browser failures must close the job cleanly
+            detail = f"health check raised {type(exc).__name__}: {exc}"
+            record("health_check", "failed", "health_check_error", detail)
+            return {
+                "job_id": job_id,
+                "status": "failed",
+                "stage": "health_check",
+                "error": detail,
+            }
         if not report.all_ok:
             detail = ", ".join(report.failed)
             record("health_check", "failed", "health_check_failed", detail)
@@ -74,7 +84,7 @@ class PublishJobRunner:
             record(stage, "running")
             try:
                 step()
-            except (EditorError, LookupError, RuntimeError) as exc:
+            except Exception as exc:  # noqa: BLE001 - normalize Playwright errors in job history
                 code = exc.stage if isinstance(exc, EditorError) else "editor_error"
                 record(stage, "failed", code, str(exc))
                 return {"job_id": job_id, "status": "failed", "stage": stage, "error": str(exc)}

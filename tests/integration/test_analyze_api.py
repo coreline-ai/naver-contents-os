@@ -36,7 +36,14 @@ def env(tmp_path, monkeypatch):
     deps.reset_caches()
 
 
-def build_client(env_unused=None, hub_status=200):
+def build_client(
+    env_unused=None,
+    hub_status=200,
+    *,
+    hub_body: dict | str = SEARCH_BODY,
+    hub_transport_error: bool = False,
+    searchad_body: dict = SEARCHAD_BODY,
+):
     """App wired to mock transports over a tmp, alembic-migrated SQLite DB."""
     from app import api as api_module
     from app import deps, errors
@@ -51,17 +58,20 @@ def build_client(env_unused=None, hub_status=200):
     calls = {"hub": 0, "trend": 0, "searchad": 0}
 
     def hub_handler(request: httpx.Request) -> httpx.Response:
+        if hub_transport_error:
+            raise httpx.ConnectError("offline", request=request)
         if request.url.path.startswith("/search-trend"):
             calls["trend"] += 1
             return httpx.Response(200, json=TREND_BODY)
         calls["hub"] += 1
         if hub_status != 200:
             return httpx.Response(hub_status)
-        return httpx.Response(200, text=json.dumps(SEARCH_BODY), headers={"content-type": "text/plain"})
+        body = hub_body if isinstance(hub_body, str) else json.dumps(hub_body)
+        return httpx.Response(200, text=body, headers={"content-type": "text/plain"})
 
     def searchad_handler(request: httpx.Request) -> httpx.Response:
         calls["searchad"] += 1
-        return httpx.Response(200, json=SEARCHAD_BODY)
+        return httpx.Response(200, json=searchad_body)
 
     gateway = Gateway(
         cache=SqlCacheStore(sessions),
@@ -70,6 +80,8 @@ def build_client(env_unused=None, hub_status=200):
         request_error=errors.RequestError,
         rate_limit_error=errors.RateLimitError,
         quota_error=errors.QuotaError,
+        transport_error=errors.UpstreamUnavailableError,
+        schema_error=errors.SchemaError,
         sleeper=lambda _s: None,
     )
     service = AnalyzeService(
@@ -178,6 +190,46 @@ def test_upstream_auth_failure_degrades_block_not_request(env):
     assert body["landscape"] is None
     assert body["data_status"]["searchad"] == "ok"  # other sources unaffected
     assert body["metric"] is not None
+
+
+def test_upstream_schema_failure_degrades_only_affected_blocks(env):
+    client, _, _ = build_client(hub_body="not-json", searchad_body={"keywordList": "bad"})
+    body = analyze(client).json()
+
+    assert body["data_status"] == {
+        "searchad": "schema",
+        "hub_search": "schema",
+        "hub_trend": "ok",
+    }
+    assert body["metric"] is None
+    assert body["landscape"] is None
+    assert body["trend"] is not None
+    assert body["snapshot_id"] >= 1
+
+
+def test_upstream_transport_failure_degrades_without_500(env):
+    client, _, _ = build_client(hub_transport_error=True)
+    response = analyze(client)
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["data_status"]["hub_search"] == "upstream_unreachable"
+    assert body["data_status"]["hub_trend"] == "upstream_unreachable"
+    assert body["landscape"] is None
+    assert body["trend"] is None
+    assert body["data_status"]["searchad"] == "ok"
+
+
+def test_persistent_rate_limit_degrades_without_retrying_forever(env):
+    client, calls, _ = build_client(hub_status=429)
+    response = analyze(client)
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["data_status"]["hub_search"] == "rate_limit"
+    assert body["landscape"] is None
+    assert body["data_status"]["hub_trend"] == "ok"
+    assert calls["hub"] == 4  # initial request + the configured three retries
 
 
 def test_missing_exact_searchad_row_does_not_use_first_related_metric(env):

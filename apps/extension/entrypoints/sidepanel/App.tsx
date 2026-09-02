@@ -6,7 +6,7 @@ import type {
   SerpObservation,
 } from '@ncos/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CoreClient, CoreError } from '~/lib/core';
 import { MSG_GET_BLOG, MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
 import type { BlogParse } from '~/lib/parsers/blog';
@@ -21,6 +21,7 @@ const STATUS_LABEL: Record<string, string> = {
   rate_limit: '요청 제한',
   request: '요청 오류',
   schema: '스키마 오류',
+  upstream_unreachable: '연결 오류',
 };
 
 export default function App() {
@@ -31,6 +32,9 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState('');
   const [draft, setDraft] = useState<DraftCreateResponse | null>(null);
   const [blogInspection, setBlogInspection] = useState<BlogParse | null>(null);
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  const analysisEpoch = useRef(0);
+  const draftEpoch = useRef(0);
 
   useEffect(() => {
     void settings.load();
@@ -51,37 +55,80 @@ export default function App() {
     refetchInterval: 30_000,
   });
 
-  const analyze = useMutation<AnalyzeResponse, CoreError, { keyword: string; force?: boolean }>({
-    mutationFn: ({ keyword: kw, force }) => client.analyze(kw, serp, force ?? false),
-    onSuccess: () => setDraft(null),
+  const analyze = useMutation<
+    AnalyzeResponse,
+    CoreError,
+    { keyword: string; force?: boolean; serp: SerpObservation | null; requestId: number }
+  >({
+    mutationFn: ({ keyword: kw, force, serp: requestSerp }) =>
+      client.analyze(kw, requestSerp, force ?? false),
+    onSuccess: (data, variables) => {
+      if (variables.requestId === analysisEpoch.current) setResult(data);
+    },
   });
 
   const createDraft = useMutation<
     DraftCreateResponse,
     CoreError,
-    { planItem: PlanItem; mode: DraftGenerationMode }
+    {
+      planItem: PlanItem;
+      mode: DraftGenerationMode;
+      analysis: AnalyzeResponse;
+      requestId: number;
+    }
   >({
-    mutationFn: ({ planItem, mode }) => {
-      if (!analyze.data) throw new CoreError(0, 'missing_analysis', '분석 결과가 없습니다');
+    mutationFn: ({ planItem, mode, analysis }) => {
       return client.createDraft({
-        keyword: analyze.data.keyword,
-        snapshot_id: analyze.data.snapshot_id,
+        keyword: analysis.keyword,
+        snapshot_id: analysis.snapshot_id,
         plan_item: planItem,
-        questions: analyze.data.questions.filter((q) => q.kind === 'question').map((q) => q.text),
+        questions: analysis.questions.filter((q) => q.kind === 'question').map((q) => q.text),
         generation_mode: mode,
       });
     },
-    onSuccess: setDraft,
+    onSuccess: (data, variables) => {
+      if (variables.requestId === draftEpoch.current) setDraft(data);
+    },
   });
 
+  function clearKeywordResults(): number {
+    const requestId = ++analysisEpoch.current;
+    ++draftEpoch.current;
+    analyze.reset();
+    createDraft.reset();
+    setResult(null);
+    setDraft(null);
+    return requestId;
+  }
+
+  function changeKeyword(nextKeyword: string) {
+    clearKeywordResults();
+    setKeyword(nextKeyword);
+    setSerp(null);
+  }
+
+  function runAnalysis(targetKeyword: string, force = false) {
+    if (!targetKeyword.trim()) return;
+    const requestId = ++analysisEpoch.current;
+    ++draftEpoch.current;
+    createDraft.reset();
+    setDraft(null);
+    if (!force) setResult(null);
+    analyze.mutate({ keyword: targetKeyword, force, serp, requestId });
+  }
+
+  function runCreateDraft(planItem: PlanItem, mode: DraftGenerationMode) {
+    if (!result) return;
+    const requestId = ++draftEpoch.current;
+    createDraft.mutate({ planItem, mode, analysis: result, requestId });
+  }
+
   async function pullCurrentSearch() {
+    const requestId = clearKeywordResults();
+    setSerp(null);
     const parsed = await requestActiveTab<SerpParse>({ type: MSG_GET_SERP });
-    if (!parsed) {
-      analyze.reset();
-      setSerp(null);
-      return;
-    }
-    if (parsed.query) setKeyword(parsed.query);
+    if (requestId !== analysisEpoch.current || !parsed?.query) return;
+    setKeyword(parsed.query);
     if (parsed.ok && parsed.results.length > 0) {
       setSerp({
         source: 'BROWSER_DOM',
@@ -100,7 +147,8 @@ export default function App() {
   }
 
   const connected = handshake.isSuccess;
-  const result = analyze.data;
+  const currentAnalysisMutation = analyze.variables?.requestId === analysisEpoch.current;
+  const currentDraftMutation = createDraft.variables?.requestId === draftEpoch.current;
 
   return (
     <div className="min-h-screen bg-slate-50 p-3 text-sm text-slate-900">
@@ -148,20 +196,17 @@ export default function App() {
         <div className="flex gap-2">
           <input
             value={keyword}
-            onChange={(e) => {
-              setKeyword(e.target.value);
-              setSerp(null);
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && keyword && analyze.mutate({ keyword })}
+            onChange={(e) => changeKeyword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && runAnalysis(keyword)}
             placeholder="키워드 입력"
             className="w-full rounded border border-slate-300 px-2 py-1.5"
           />
           <button
             className="whitespace-nowrap rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
-            disabled={!keyword || !connected || analyze.isPending}
-            onClick={() => analyze.mutate({ keyword })}
+            disabled={!keyword || !connected || (currentAnalysisMutation && analyze.isPending)}
+            onClick={() => runAnalysis(keyword)}
           >
-            {analyze.isPending ? '분석 중…' : '분석'}
+            {currentAnalysisMutation && analyze.isPending ? '분석 중…' : '분석'}
           </button>
         </div>
         <div className="mt-2 flex items-center gap-2 text-xs">
@@ -175,13 +220,13 @@ export default function App() {
           {result && (
             <button
               className="ml-auto rounded border border-slate-300 px-2 py-1 hover:bg-slate-100"
-              onClick={() => analyze.mutate({ keyword, force: true })}
+              onClick={() => runAnalysis(result.keyword, true)}
             >
               강제 새로고침
             </button>
           )}
         </div>
-        {analyze.isError && (
+        {currentAnalysisMutation && analyze.isError && (
           <p className="mt-2 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">
             오류({analyze.error.code}): {analyze.error.message}
           </p>
@@ -194,11 +239,11 @@ export default function App() {
           <LandscapeCard result={result} />
           <PlanCard
             plan={result.plan}
-            creating={createDraft.isPending}
-            onCreate={(planItem, mode) => createDraft.mutate({ planItem, mode })}
+            creating={currentDraftMutation && createDraft.isPending}
+            onCreate={runCreateDraft}
           />
           <QuestionsCard result={result} />
-          {createDraft.isError && (
+          {currentDraftMutation && createDraft.isError && (
             <p className="mt-3 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">
               초안 오류({createDraft.error.code}): {createDraft.error.message}
             </p>
@@ -309,7 +354,7 @@ export function PlanCard({
               <button
                 className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
                 disabled={creating || p.generation_status !== 'ready'}
-                title={p.generation_status === 'ready' ? 'Ollama로 초안 생성' : '현재 LLM 생성 미지원 유형'}
+                title={p.generation_status === 'ready' ? '설정된 LLM으로 초안 생성' : '현재 LLM 생성 미지원 유형'}
                 onClick={() => onCreate(p, 'llm')}
               >
                 AI 초안

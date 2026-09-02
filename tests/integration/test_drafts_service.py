@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.db import make_engine, make_session_factory
-from app.models_db import Base, Keyword, KeywordSnapshot, PublishJob
+from app.models_db import Base, Draft, DraftVersion, Keyword, KeywordSnapshot, PublishJob
 from app.services.drafts import DraftService, SqlJobStore, split_generated
 from providers.llm.base import LLMError
 
@@ -32,6 +32,15 @@ class FailingLLM:
 
     def generate(self, prompt: str, *, system: str = "") -> str:
         raise LLMError("모델 없음")
+
+
+class RecordingLLM(FakeLLM):
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, prompt: str, *, system: str = "") -> str:
+        self.calls += 1
+        return super().generate(prompt, system=system)
 
 
 PLAN_ITEM = {
@@ -114,14 +123,18 @@ def test_draft_snapshot_lineage_requires_same_keyword(sessions):
         session.add_all([matching, mismatch])
         session.commit()
 
-    service = DraftService(sessions, None)
+    llm = RecordingLLM()
+    service = DraftService(sessions, llm)
+    with pytest.raises(ValueError, match="does not belong"):
+        service.create_draft("애드포스트 승인", PLAN_ITEM, snapshot_id=mismatch.id)
+    assert llm.calls == 0  # invalid lineage must not consume an external generation call
+
     draft = service.create_draft(
         "애드포스트 승인", PLAN_ITEM, snapshot_id=matching.id
     )
+    assert llm.calls == 1
     assert draft["source_snapshot_id"] == matching.id
     assert service.get_draft(draft["draft_id"])["source_snapshot_id"] == matching.id
-    with pytest.raises(ValueError, match="does not belong"):
-        service.create_draft("애드포스트 승인", PLAN_ITEM, snapshot_id=mismatch.id)
 
 
 @pytest.fixture
@@ -228,3 +241,7 @@ def test_draft_api_maps_llm_unavailable_to_standard_error(draft_api):
     response = client.post("/v1/drafts", json=payload, headers=_headers(token))
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "llm_unavailable"
+    assert response.json()["error"]["provider"] == "failing"
+    with sessions() as session:
+        assert session.query(Draft).count() == 0
+        assert session.query(DraftVersion).count() == 0

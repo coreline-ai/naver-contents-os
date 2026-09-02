@@ -133,6 +133,25 @@ def test_runner_stops_before_any_input_when_health_fails():
     assert job["error_code"] == "health_check_failed"
 
 
+def test_runner_closes_job_when_health_check_raises():
+    page = FakePage()
+    store = MemoryJobStore()
+    runner = PublishJobRunner(
+        store,
+        health_runner=lambda _page, _blog_id: (_ for _ in ()).throw(TimeoutError("navigation timed out")),
+    )
+
+    result = runner.run(
+        page, make_adapter(page), draft_id=1, blog_id="tester", title="제목", body="본문", tags=[]
+    )
+
+    assert result["status"] == "failed"
+    assert result["stage"] == "health_check"
+    job = store.jobs[result["job_id"]]
+    assert job["error_code"] == "health_check_error"
+    assert job["history"][-1]["status"] == "failed"
+
+
 def test_runner_full_success_records_all_stages_and_never_publishes():
     page = FakePage()
     adapter = make_adapter(page)
@@ -190,6 +209,28 @@ def test_runner_records_failure_stage_and_stops():
     assert not any(a[0] == "click" and a[1] in SMARTEDITOR_SELECTORS["draft_save_button"] for a in page.actions)
 
 
+def test_runner_normalizes_unexpected_browser_error():
+    class BrokenPage(FakePage):
+        def type_text(self, selector, text, delay_ms):
+            raise ValueError("browser context closed")
+
+    page = BrokenPage()
+    store = MemoryJobStore()
+    good = HealthReport()
+    good.add("all", True)
+    runner = PublishJobRunner(store, health_runner=lambda _page, _blog_id: good)
+
+    result = runner.run(
+        page, make_adapter(page), draft_id=1, blog_id="tester", title="제목", body="본문", tags=[]
+    )
+
+    assert result["status"] == "failed"
+    assert result["stage"] == "input_title"
+    job = store.jobs[result["job_id"]]
+    assert job["error_code"] == "editor_error"
+    assert job["history"][-1]["status"] == "failed"
+
+
 def test_save_draft_fallback_esc_then_retry():
     primary = SMARTEDITOR_SELECTORS["draft_save_button"][0]
 
@@ -201,7 +242,7 @@ def test_save_draft_fallback_esc_then_retry():
         def click(self, selector):
             if selector == primary and self.attempts == 0:
                 self.attempts += 1
-                raise RuntimeError("obscured by layer")
+                raise ValueError("obscured by layer")
             super().click(selector)
 
     page = FlakyPage()

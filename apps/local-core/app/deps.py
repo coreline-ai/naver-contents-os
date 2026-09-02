@@ -77,7 +77,9 @@ def get_draft_service(use_llm: bool = False) -> DraftService:
         try:
             llm = build_llm_provider(settings)
         except LLMError as exc:
-            raise errors.LLMUnavailableError(str(exc), provider="llm") from exc
+            configured = settings.llm_provider or "llm"
+            provider = "ollama" if configured == "local" else configured
+            raise errors.LLMUnavailableError(str(exc), provider=provider) from exc
     return DraftService(get_session_factory(), llm)
 
 

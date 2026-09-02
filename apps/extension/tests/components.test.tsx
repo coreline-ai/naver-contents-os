@@ -33,7 +33,8 @@ describe('sidepanel result cards', () => {
     const html = renderToStaticMarkup(<PlanCard plan={plan} creating={false} onCreate={vi.fn()} />);
     expect(html).toContain('현재 LLM 생성 미지원 유형');
     expect(html).toMatch(/disabled=""[^>]*title="현재 LLM 생성 미지원 유형"/);
-    expect(html).toContain('Ollama로 초안 생성');
+    expect(html).toContain('설정된 LLM으로 초안 생성');
+    expect(html).not.toContain('Ollama로 초안 생성');
   });
 
   it('renders blog inspector metrics', () => {
