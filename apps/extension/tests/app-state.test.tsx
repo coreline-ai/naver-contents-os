@@ -344,4 +344,37 @@ describe('sidepanel keyword state', () => {
     expect(input.value).toBe('클러스터 키워드');
     expect(analyzeBodies.at(-1)).toMatchObject({ keyword: '클러스터 키워드', serp: null });
   });
+
+  it('does not treat an unknown sensitive classification as safe for LLM generation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/v1/handshake')) return response({ status: 'ok' });
+        if (url.endsWith('/v1/keywords/preflight')) {
+          return response({
+            keyword: '판별 실패',
+            correction: null,
+            sensitive: null,
+            data_status: { errata: 'ok', adult: 'request' },
+            collected_at: '2026-09-02T00:00:00Z',
+          });
+        }
+        if (url.endsWith('/v1/keywords/analyze')) {
+          const body = JSON.parse(String(init?.body));
+          return response(analysis(body.keyword));
+        }
+        return response({}, 404);
+      }),
+    );
+    await act(async () => root.render(wrapper(<App />)));
+    await settle();
+
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="키워드 입력"]')!;
+    await act(async () => setInput(input, '판별 실패'));
+    await act(async () => button(container, '분석').click());
+    await settle();
+    expect(container.textContent).toContain('민감 키워드 판별을 완료하지 못해');
+    expect(button(container, 'AI 초안').disabled).toBe(true);
+  });
 });

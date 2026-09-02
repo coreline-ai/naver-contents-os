@@ -9,6 +9,7 @@ import {
   RelatedKeywordsCard,
   ScoreCard,
   SearchEvidenceCard,
+  SpecializedCard,
   TrendCard,
 } from '../entrypoints/sidepanel/App';
 
@@ -195,5 +196,22 @@ describe('sidepanel result cards', () => {
     );
     expect(masked).toContain('title="정확한 합계 결측"');
     expect(masked).not.toContain('>100%</td>');
+  });
+
+  it('blocks unsafe specialized URLs and explains disabled sensitive LLM actions', () => {
+    const specialized = renderToStaticMarkup(
+      <SpecializedCard result={{
+        mode: 'image', keyword: '테스트', status: 'ok',
+        items: [{ title: '<script>alert(1)</script>', link: 'javascript:alert(1)', thumbnail: 'data:text/html,bad' }],
+      }} />,
+    );
+    const sensitivePlan = renderToStaticMarkup(
+      <PlanCard plan={plan} creating={false} onCreate={vi.fn()} allowLlm={false} />,
+    );
+    expect(specialized).toContain('href="#"');
+    expect(specialized).toContain('src="#"');
+    expect(specialized).not.toContain('<script>alert');
+    expect(sensitivePlan).toContain('AI 초안이 비활성화');
+    expect(sensitivePlan).toContain('민감 키워드 판별로 AI 초안 비활성화');
   });
 });

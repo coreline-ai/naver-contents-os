@@ -114,6 +114,42 @@ class Gateway:
     _next_request_at: dict[str, float] = field(default_factory=dict)
     _guard: threading.Lock = field(default_factory=threading.Lock)
 
+    def usage_status(self, policy: ProviderPolicy) -> dict:
+        """Return non-sensitive quota state for UI confirmation screens."""
+        now = datetime.now(timezone.utc)
+        monthly_period = now.strftime("%Y%m")
+        daily_period = now.strftime("%Y%m%d")
+        monthly_used = self.usage.current(policy.name, monthly_period)
+        daily_used = (
+            self.usage.current(policy.name, daily_period)
+            if policy.daily_limit is not None
+            else None
+        )
+        ratios = [monthly_used / policy.monthly_limit if policy.monthly_limit else 1.0]
+        if daily_used is not None and policy.daily_limit:
+            ratios.append(daily_used / policy.daily_limit)
+        ratio = max(ratios)
+        return {
+            "provider": policy.name,
+            "monthly": {
+                "period": monthly_period,
+                "used": monthly_used,
+                "limit": policy.monthly_limit,
+            },
+            "daily": (
+                {
+                    "period": daily_period,
+                    "used": daily_used,
+                    "limit": policy.daily_limit,
+                }
+                if daily_used is not None
+                else None
+            ),
+            "ratio": round(ratio, 4),
+            "warning": ratio >= self.warn_ratio,
+            "blocked": ratio >= 1,
+        }
+
     def _acquire_dedup(self, key: str) -> _LockEntry:
         with self._guard:
             entry = self._locks.setdefault(key, _LockEntry())

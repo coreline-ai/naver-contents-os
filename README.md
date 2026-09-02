@@ -8,9 +8,13 @@
 
 - NAVER API HUB: Blog/Cafe/지식iN/Web/News 검색과 Search Trend
 - NAVER SearchAd: `/keywordstool` 검색량·연관 키워드
+- 검색 전 오타 교정·민감 키워드 Gate
+- 2단계 Opportunity Graph, 입찰 추정 기반 Commercial Score, 기기·성별·연령 상대 추세
+- 수동 Watchlist, 지역·쇼핑·이미지 특화 분석, SearchAd 계정 성과 기반 콘텐츠 공백 후보
 - TTL cache, 원자적 일·월 quota guard, provider별 RPS, `Retry-After`, source provenance
 - Opportunity Score v1 + coverage/confidence, 질문 추출, cluster, 15편 plan
-- WXT/React 사이드패널: PC·모바일 검색량, 연관 키워드, 상대 Trend, cluster, API HUB/Browser SERP 근거, Blog Inspector
+- WXT/React 사이드패널: 분석/플랜/초안 탭, PC·모바일 검색량, 연관 키워드, 상대 Trend, cluster, API HUB/Browser SERP 근거, Blog Inspector
+- 확장 내부 전체화면 `research.html`: 그래프·Watchlist·특화 분석·광고 성과 Research Workspace
 - Draft REST API, 버전 이력, snapshot·prompt·provider lineage
 - 사이드패널 Draft 제목·본문 편집, 새 버전 저장, 최신 버전 Publisher Job 연결·상태 조회
 - Ollama·OpenAI 호환 provider와 LLM 없는 skeleton 초안
@@ -58,6 +62,23 @@ pnpm build:ext
 2. 개발자 모드를 활성화합니다.
 3. **압축해제된 확장 프로그램 로드**에서 `apps/extension/.output/chrome-mv3`를 선택합니다.
 4. 사이드패널 설정에 `data/local_core_token.txt` 값을 입력합니다.
+
+## Research Workspace
+
+사이드패널에서 일반 분석을 마친 뒤 `Research Workspace 전체화면 열기`를 누릅니다. URL에는 `keyword`와 `snapshot_id`만 전달되며 API Secret·본문·전체 provider 응답은 Extension storage나 URL에 저장하지 않습니다.
+
+| 화면 | 기능 | 명시적 호출 예산 |
+|---|---|---:|
+| 키워드 맵 | seed + 1차 30개 + 2차 seed 5개, 최대 node 80개 | 최대 12회 |
+| 상업성 | 평균 순위·최소 노출·중간 입찰·성과 추정 | 4회 |
+| 타깃 | 기기 2·성별 2·연령 11개 상대 추세 | 최대 15회 |
+| Watchlist | 선택 키워드 동일 조건 snapshot 수동 비교 | 키워드당 약 2회 |
+| 특화 분석 | 지역·Shopping Insight·이미지 참고 결과 | mode별 1회 |
+| 광고 성과 | 계정 캠페인·광고그룹·키워드·성과 조회 | 최대 23회 |
+
+외부 호출은 모두 사용자가 버튼을 눌러야 시작됩니다. Watchlist 자동 갱신과 백그라운드 스케줄러는 없습니다. SearchAd 계정 API는 GET 조회만 사용하며 POST는 공식 입찰/성과 estimate 계산 URI에만 허용됩니다. 캠페인·광고그룹·광고·키워드 생성/수정/삭제는 구현하지 않습니다.
+
+Search Trend와 Shopping Insight 차트는 요청 범위마다 독립 정규화된 상대지수입니다. 절대 검색량, 성별·연령 인구 비중 또는 판매량으로 해석하면 안 됩니다. 이미지 검색은 출처 열기와 참고용 썸네일만 제공하며 재사용 권리를 보장하지 않습니다.
 
 ## 초안 API
 
@@ -112,12 +133,15 @@ uv run python scripts/run_publish.py \
 ```bash
 ./scripts/verify_all.sh          # local unit/integration/type/build
 ./scripts/verify_all.sh --live   # NAVER API smoke 포함
+uv run python scripts/verify_api_hub.py --research
+uv run python scripts/verify_searchad.py --research "러닝화"
 ```
 
-기본 검증은 외부 API, Ollama, Codex proxy, Chrome, SmartEditor를 호출하지 않습니다. 현재 기준으로 Python non-live 136개와 Extension 23개, 총 159개 테스트가 통과합니다.
+기본 검증은 외부 API, Ollama, Codex proxy, Chrome, SmartEditor를 호출하지 않습니다. 현재 기준으로 Python non-live 150개와 Extension 29개, 총 179개 테스트가 통과합니다. Extension production bundle은 `research.html`을 포함해 총 312.4KB입니다.
 
 ## 주요 문서
 
 - [문서 인덱스](./docs/INDEX.md)
 - [구현 전문가 분석](./docs/14_implementation_expert_review.md)
 - [P0/P1 잔여 구현 계획](./dev-plan/implement_20260902_112824.md)
+- [Research Workspace Phase 1~8 구현 계획](./dev-plan/implement_20260902_133257.md)

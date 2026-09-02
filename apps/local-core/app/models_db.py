@@ -109,3 +109,21 @@ class ApiUsage(Base):
     provider: Mapped[str] = mapped_column(String(40))
     period: Mapped[str] = mapped_column(String(8))  # YYYYMM or YYYYMMDD (UTC)
     count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class WatchlistItem(Base):
+    """User-curated keyword with manually refreshed, comparable snapshots."""
+
+    __tablename__ = "watchlist_items"
+    __table_args__ = (UniqueConstraint("keyword_id", name="uq_watchlist_items_keyword_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("keywords.id"), index=True)
+    comparison_key: Mapped[str] = mapped_column(String(100), default="month:12:all")
+    previous_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_status: Mapped[str] = mapped_column(String(40), default="never")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

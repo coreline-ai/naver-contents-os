@@ -3,12 +3,21 @@
 
 import type {
   AnalyzeResponse,
+  AdPerformanceResponse,
+  AudienceResponse,
+  CapabilitiesResponse,
+  CommercialResponse,
   DraftCreateRequest,
   DraftCreateResponse,
   DraftDetail,
   HealthResponse,
   PublishJob,
+  PreflightResponse,
+  ResearchGraphResponse,
   SerpObservation,
+  SpecializedResponse,
+  WatchlistItem,
+  WatchlistResponse,
 } from '@ncos/contracts';
 
 export class CoreError extends Error {
@@ -51,6 +60,7 @@ export class CoreClient {
         body?.error?.message ?? body?.detail?.message ?? validationMessage ?? 'request failed',
       );
     }
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 
@@ -66,6 +76,79 @@ export class CoreClient {
     return this.request<AnalyzeResponse>('/v1/keywords/analyze', {
       method: 'POST',
       body: JSON.stringify({ keyword, force_refresh: forceRefresh, serp: serp ?? null }),
+    });
+  }
+
+  capabilities(): Promise<CapabilitiesResponse> {
+    return this.request<CapabilitiesResponse>('/v1/capabilities');
+  }
+
+  preflight(keyword: string, forceRefresh = false): Promise<PreflightResponse> {
+    return this.request<PreflightResponse>('/v1/keywords/preflight', {
+      method: 'POST',
+      body: JSON.stringify({ keyword, force_refresh: forceRefresh }),
+    });
+  }
+
+  graph(keyword: string, snapshotId?: number | null, forceRefresh = false): Promise<ResearchGraphResponse> {
+    return this.request<ResearchGraphResponse>('/v1/research/graph', {
+      method: 'POST',
+      body: JSON.stringify({ keyword, snapshot_id: snapshotId ?? null, force_refresh: forceRefresh }),
+    });
+  }
+
+  commercial(keywords: string[], device: 'PC' | 'MOBILE' = 'PC', forceRefresh = false): Promise<CommercialResponse> {
+    return this.request<CommercialResponse>('/v1/research/commercial', {
+      method: 'POST',
+      body: JSON.stringify({ keywords, device, force_refresh: forceRefresh }),
+    });
+  }
+
+  audience(keyword: string, forceRefresh = false): Promise<AudienceResponse> {
+    return this.request<AudienceResponse>('/v1/research/audience', {
+      method: 'POST',
+      body: JSON.stringify({ keyword, force_refresh: forceRefresh }),
+    });
+  }
+
+  specialized(
+    keyword: string,
+    mode: 'general' | 'local' | 'shopping' | 'image',
+    category = '',
+    forceRefresh = false,
+  ): Promise<SpecializedResponse> {
+    return this.request<SpecializedResponse>('/v1/research/specialized', {
+      method: 'POST',
+      body: JSON.stringify({ keyword, mode, category, force_refresh: forceRefresh }),
+    });
+  }
+
+  listWatchlist(): Promise<WatchlistResponse> {
+    return this.request<WatchlistResponse>('/v1/watchlist');
+  }
+
+  addWatchlist(keyword: string): Promise<WatchlistItem> {
+    return this.request<WatchlistItem>('/v1/watchlist', {
+      method: 'POST',
+      body: JSON.stringify({ keyword }),
+    });
+  }
+
+  deleteWatchlist(itemId: number): Promise<void> {
+    return this.request<void>(`/v1/watchlist/${itemId}`, { method: 'DELETE' });
+  }
+
+  refreshWatchlist(itemIds: number[], forceRefresh = false): Promise<{ items: WatchlistItem[] }> {
+    return this.request('/v1/watchlist/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds, force_refresh: forceRefresh }),
+    });
+  }
+
+  adPerformance(since: string, until: string, forceRefresh = false): Promise<AdPerformanceResponse> {
+    return this.request<AdPerformanceResponse>('/v1/research/ad-performance', {
+      method: 'POST',
+      body: JSON.stringify({ since, until, force_refresh: forceRefresh }),
     });
   }
 

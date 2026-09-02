@@ -99,4 +99,31 @@ describe('CoreClient draft contract', () => {
     );
     expect(fetchMock.mock.calls[0][1]?.body).not.toContain('본문');
   });
+
+  it('uses explicit research routes and handles empty DELETE responses', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      if (String(input).endsWith('/v1/watchlist/3')) {
+        return { ok: true, status: 204, json: async () => { throw new Error('no body'); } };
+      }
+      return { ok: true, status: 200, json: async () => ({ status: 'ok', nodes: [], edges: [] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new CoreClient('http://127.0.0.1:3719', 'token');
+
+    await client.graph('러닝화', 7);
+    await expect(client.deleteWatchlist(3)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:3719/v1/research/graph',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ keyword: '러닝화', snapshot_id: 7, force_refresh: false }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:3719/v1/watchlist/3',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
 });

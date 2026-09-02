@@ -12,8 +12,10 @@ import json
 import httpx
 from pydantic import ValidationError
 
-from providers.gateway import Gateway, ProviderPolicy, cache_key
+from providers.gateway import Gateway, GatewayResult, ProviderPolicy, cache_key
 from providers.models import (
+    ImageSearchItem,
+    LocalSearchItem,
     SearchChannelResult,
     SearchItem,
     SearchLandscape,
@@ -24,6 +26,7 @@ from providers.models import (
 BASE_URL = "https://naverapihub.apigw.ntruss.com"
 HUB_SEARCH_TTL = 6 * 3600
 HUB_TREND_TTL = 24 * 3600
+HUB_PREFLIGHT_TTL = 24 * 3600
 
 CHANNEL_PATHS = {
     "blog": "/search/v1/blog",
@@ -83,20 +86,33 @@ class NaverHubSearchClient:
             transport=transport,
         )
 
+    def usage_status(self) -> dict:
+        return self._gateway.usage_status(self._policy)
+
+    def _get_object(
+        self,
+        path: str,
+        params: dict,
+        *,
+        ttl_seconds: int = HUB_SEARCH_TTL,
+        force_refresh: bool = False,
+    ) -> tuple[dict, GatewayResult]:
+        key = cache_key("naver_hub_search", "GET", path, params, None)
+        result = self._gateway.request(
+            policy=self._policy,
+            key=key,
+            ttl_seconds=ttl_seconds,
+            send=lambda: self._http.get(path, params=params),
+            force_refresh=force_refresh,
+        )
+        return _load_object(self._gateway, self._policy, result.body), result
+
     def search(
         self, channel: str, query: str, *, display: int = 10, start: int = 1, force_refresh: bool = False
     ) -> SearchChannelResult:
         path = CHANNEL_PATHS[channel]
         params = {"query": query, "display": display, "start": start}
-        key = cache_key("naver_hub_search", "GET", path, params, None)
-        result = self._gateway.request(
-            policy=self._policy,
-            key=key,
-            ttl_seconds=HUB_SEARCH_TTL,
-            send=lambda: self._http.get(path, params=params),
-            force_refresh=force_refresh,
-        )
-        data = _load_object(self._gateway, self._policy, result.body)
+        data, result = self._get_object(path, params, force_refresh=force_refresh)
         if not isinstance(data.get("items", []), list):
             raise self._gateway.invalid_schema(self._policy, "search.items must be a list")
         try:
@@ -128,6 +144,114 @@ class NaverHubSearchClient:
             news_items=results["news"].items,
         )
 
+    def get_errata(self, query: str, *, force_refresh: bool = False) -> dict:
+        data, result = self._get_object(
+            "/search/v1/errata",
+            {"query": query},
+            ttl_seconds=HUB_PREFLIGHT_TTL,
+            force_refresh=force_refresh,
+        )
+        value = data.get("errata", "")
+        if not isinstance(value, str):
+            raise self._gateway.invalid_schema(self._policy, "errata must be a string")
+        return {
+            "value": value.strip(),
+            "collected_at": result.collected_at.isoformat(),
+            "from_cache": result.from_cache,
+        }
+
+    def is_adult(self, query: str, *, force_refresh: bool = False) -> dict:
+        data, result = self._get_object(
+            "/search/v1/adult",
+            {"query": query},
+            ttl_seconds=HUB_PREFLIGHT_TTL,
+            force_refresh=force_refresh,
+        )
+        value = str(data.get("adult", ""))
+        if value not in {"0", "1"}:
+            raise self._gateway.invalid_schema(self._policy, "adult must be '0' or '1'")
+        return {
+            "value": value == "1",
+            "collected_at": result.collected_at.isoformat(),
+            "from_cache": result.from_cache,
+        }
+
+    def search_local(
+        self, query: str, *, display: int = 5, force_refresh: bool = False
+    ) -> dict:
+        if not 1 <= display <= 5:
+            raise ValueError("local display must be between 1 and 5")
+        data, result = self._get_object(
+            "/search/v1/local",
+            {"query": query, "display": display, "start": 1, "sort": "comment"},
+            force_refresh=force_refresh,
+        )
+        rows = data.get("items", [])
+        if not isinstance(rows, list):
+            raise self._gateway.invalid_schema(self._policy, "local.items must be a list")
+        try:
+            items = [
+                LocalSearchItem(
+                    title=row.get("title", ""),
+                    link=row.get("link", ""),
+                    category=row.get("category", ""),
+                    description=row.get("description", ""),
+                    address=row.get("address", ""),
+                    road_address=row.get("roadAddress", ""),
+                    mapx=str(row.get("mapx", "")),
+                    mapy=str(row.get("mapy", "")),
+                )
+                for row in rows
+                if isinstance(row, dict)
+            ]
+        except ValidationError as exc:
+            raise self._gateway.invalid_schema(self._policy, "invalid local item") from exc
+        return {
+            "items": [item.model_dump(mode="json") for item in items],
+            "total": data.get("total"),
+            "collected_at": result.collected_at.isoformat(),
+            "from_cache": result.from_cache,
+        }
+
+    def search_images(
+        self, query: str, *, display: int = 10, force_refresh: bool = False
+    ) -> dict:
+        if not 1 <= display <= 100:
+            raise ValueError("image display must be between 1 and 100")
+        data, result = self._get_object(
+            "/search/v1/image",
+            {"query": query, "display": display, "start": 1, "sort": "sim", "filter": "all"},
+            force_refresh=force_refresh,
+        )
+        rows = data.get("items", [])
+        if not isinstance(rows, list):
+            raise self._gateway.invalid_schema(self._policy, "image.items must be a list")
+
+        def dimension(value) -> int | None:
+            try:
+                parsed = int(str(value))
+                return parsed if parsed >= 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        items = [
+            ImageSearchItem(
+                title=row.get("title", ""),
+                link=row.get("link", ""),
+                thumbnail=row.get("thumbnail", ""),
+                width=dimension(row.get("sizewidth")),
+                height=dimension(row.get("sizeheight")),
+            )
+            for row in rows
+            if isinstance(row, dict)
+        ]
+        return {
+            "items": [item.model_dump(mode="json") for item in items],
+            "total": data.get("total"),
+            "collected_at": result.collected_at.isoformat(),
+            "from_cache": result.from_cache,
+        }
+
 
 class NaverHubTrendClient:
     def __init__(
@@ -148,21 +272,47 @@ class NaverHubTrendClient:
             transport=transport,
         )
 
-    def get_search_trend(
+    def usage_status(self) -> dict:
+        return self._gateway.usage_status(self._policy)
+
+    def get_search_trends(
         self,
-        keyword: str,
+        keyword_groups: list[tuple[str, list[str]]],
         *,
         months: int = 12,
         time_unit: str = "month",
+        device: str = "",
+        gender: str = "",
+        ages: list[str] | None = None,
         force_refresh: bool = False,
-    ) -> TrendSeries:
+    ) -> list[TrendSeries]:
+        if not 1 <= len(keyword_groups) <= 5:
+            raise ValueError("keyword groups must contain 1 to 5 groups")
+        if any(not keywords or len(keywords) > 20 for _, keywords in keyword_groups):
+            raise ValueError("each keyword group must contain 1 to 20 keywords")
+        if time_unit not in {"date", "week", "month"}:
+            raise ValueError("invalid trend time unit")
+        if device not in {"", "pc", "mo"} or gender not in {"", "m", "f"}:
+            raise ValueError("invalid trend segment")
+        age_values = ages or []
+        valid_ages = {str(value) for value in range(1, 12)}
+        if any(age not in valid_ages for age in age_values):
+            raise ValueError("invalid trend age")
         today = dt.date.today()
-        payload = {
+        payload: dict = {
             "startDate": (today - dt.timedelta(days=months * 30)).strftime("%Y-%m-01"),
             "endDate": today.strftime("%Y-%m-%d"),
             "timeUnit": time_unit,
-            "keywordGroups": [{"groupName": keyword, "keywords": [keyword]}],
+            "keywordGroups": [
+                {"groupName": name, "keywords": keywords} for name, keywords in keyword_groups
+            ],
         }
+        if device:
+            payload["device"] = device
+        if gender:
+            payload["gender"] = gender
+        if age_values:
+            payload["ages"] = age_values
         key = cache_key("naver_hub_trend", "POST", "/search-trend/v1/search", None, payload)
         result = self._gateway.request(
             policy=self._policy,
@@ -175,22 +325,132 @@ class NaverHubTrendClient:
         results = data.get("results", [])
         if not isinstance(results, list):
             raise self._gateway.invalid_schema(self._policy, "trend.results must be a list")
-        raw_points = results[0].get("data", []) if results and isinstance(results[0], dict) else []
-        if not isinstance(raw_points, list):
-            raise self._gateway.invalid_schema(self._policy, "trend data must be a list")
+        series: list[TrendSeries] = []
         try:
-            points = [
-                TrendPoint(period=p.get("period", ""), ratio=float(p["ratio"]))
-                for p in raw_points
-                if isinstance(p, dict)
-            ]
-            return TrendSeries(
-                keyword_group=keyword,
-                keywords=[keyword],
-                time_unit=time_unit,
-                points=points,
-                collected_at=result.collected_at,
-                from_cache=result.from_cache,
-            )
+            for index, raw in enumerate(results):
+                if not isinstance(raw, dict) or not isinstance(raw.get("data", []), list):
+                    raise TypeError("invalid trend result")
+                fallback_name, fallback_keywords = keyword_groups[min(index, len(keyword_groups) - 1)]
+                series.append(
+                    TrendSeries(
+                        keyword_group=str(raw.get("title") or fallback_name),
+                        keywords=[str(value) for value in raw.get("keywords", fallback_keywords)],
+                        time_unit=time_unit,
+                        points=[
+                            TrendPoint(period=point.get("period", ""), ratio=float(point["ratio"]))
+                            for point in raw.get("data", [])
+                            if isinstance(point, dict)
+                        ],
+                        device=device,
+                        gender=gender,
+                        ages=age_values,
+                        collected_at=result.collected_at,
+                        from_cache=result.from_cache,
+                    )
+                )
         except (ValidationError, KeyError, TypeError, ValueError) as exc:
             raise self._gateway.invalid_schema(self._policy, "invalid trend response schema") from exc
+        for index in range(len(series), len(keyword_groups)):
+            name, keywords = keyword_groups[index]
+            series.append(
+                TrendSeries(
+                    keyword_group=name,
+                    keywords=keywords,
+                    time_unit=time_unit,
+                    points=[],
+                    device=device,
+                    gender=gender,
+                    ages=age_values,
+                    collected_at=result.collected_at,
+                    from_cache=result.from_cache,
+                )
+            )
+        return series
+
+    def get_search_trend(
+        self,
+        keyword: str,
+        *,
+        months: int = 12,
+        time_unit: str = "month",
+        force_refresh: bool = False,
+    ) -> TrendSeries:
+        rows = self.get_search_trends(
+            [(keyword, [keyword])],
+            months=months,
+            time_unit=time_unit,
+            force_refresh=force_refresh,
+        )
+        return rows[0]
+
+
+class NaverHubShoppingClient:
+    def __init__(
+        self,
+        gateway: Gateway,
+        client_id: str,
+        client_secret: str,
+        *,
+        shopping_policy: ProviderPolicy,
+        transport: httpx.BaseTransport | None = None,
+    ):
+        self._gateway = gateway
+        self._policy = shopping_policy
+        self._http = httpx.Client(
+            base_url=BASE_URL,
+            headers={"X-NCP-APIGW-API-KEY-ID": client_id, "X-NCP-APIGW-API-KEY": client_secret},
+            timeout=15,
+            transport=transport,
+        )
+
+    def usage_status(self) -> dict:
+        return self._gateway.usage_status(self._policy)
+
+    def get_keyword_trends(
+        self,
+        category: str,
+        keywords: list[str],
+        *,
+        months: int = 12,
+        time_unit: str = "month",
+        force_refresh: bool = False,
+    ) -> list[dict]:
+        cleaned = [keyword.strip() for keyword in keywords if keyword.strip()][:5]
+        if not category.strip() or not cleaned:
+            raise ValueError("shopping category and keywords are required")
+        today = dt.date.today()
+        payload = {
+            "startDate": (today - dt.timedelta(days=months * 30)).strftime("%Y-%m-01"),
+            "endDate": today.strftime("%Y-%m-%d"),
+            "timeUnit": time_unit,
+            "category": category.strip(),
+            "keyword": [{"name": keyword, "param": [keyword]} for keyword in cleaned],
+        }
+        uri = "/shopping/v1/category/keywords"
+        key = cache_key("naver_hub_shopping", "POST", uri, None, payload)
+        result = self._gateway.request(
+            policy=self._policy,
+            key=key,
+            ttl_seconds=HUB_TREND_TTL,
+            send=lambda: self._http.post(uri, json=payload),
+            force_refresh=force_refresh,
+        )
+        data = _load_object(self._gateway, self._policy, result.body)
+        rows = data.get("results", [])
+        if not isinstance(rows, list):
+            raise self._gateway.invalid_schema(self._policy, "shopping results must be a list")
+        return [
+            {
+                "title": str(row.get("title", "")),
+                "keyword": list(row.get("keyword", [])) if isinstance(row.get("keyword", []), list) else [],
+                "points": [
+                    {"period": str(point.get("period", "")), "ratio": float(point.get("ratio", 0))}
+                    for point in row.get("data", [])
+                    if isinstance(point, dict)
+                ],
+                "collected_at": result.collected_at.isoformat(),
+                "from_cache": result.from_cache,
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ]

@@ -108,3 +108,43 @@ def test_invalid_keyword_list_schema_is_mapped():
     )
     with pytest.raises(SchemaError):
         client.get_related_keywords("애드포스트")
+
+
+def test_read_only_estimate_and_account_endpoints_sign_bare_uri():
+    from tests.conftest import make_gateway
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/ncc/campaigns":
+            return httpx.Response(200, json=[{"nccCampaignId": "cmp-1"}])
+        if request.url.path == "/ncc/adgroups":
+            return httpx.Response(200, json=[{"nccAdgroupId": "grp-1"}])
+        if request.url.path == "/ncc/keywords":
+            return httpx.Response(200, json=[{"nccKeywordId": "kw-1", "keyword": "러닝화"}])
+        if request.url.path == "/stats":
+            return httpx.Response(200, json={"data": [{"id": "kw-1", "clkCnt": 3}]})
+        return httpx.Response(200, json={"items": [{"keyword": "러닝화", "bid": 700}]})
+
+    client = NaverSearchAdClient(
+        make_gateway(), "api-key", "secret-key", "12345",
+        policy=ProviderPolicy("searchad_read_only", 1000),
+        transport=httpx.MockTransport(handler),
+    )
+    assert client.estimate_median_bid(["러닝화"])["items"][0]["bid"] == 700
+    assert client.list_campaigns()[0]["nccCampaignId"] == "cmp-1"
+    assert client.list_adgroups()[0]["nccAdgroupId"] == "grp-1"
+    assert client.list_keywords("grp-1")[0]["nccKeywordId"] == "kw-1"
+    assert client.get_stats(["kw-1"], "2026-08-01", "2026-08-31")[0]["clkCnt"] == 3
+    for request in requests:
+        signature = request.headers["X-Signature"]
+        timestamp = request.headers["X-Timestamp"]
+        assert signature == build_signature(timestamp, request.method, request.url.path, "secret-key")
+
+
+def test_searchad_client_has_no_account_mutation_transport_calls():
+    source = __import__("pathlib").Path("python/providers/searchad/client.py").read_text(encoding="utf-8")
+    assert "self._http.put(" not in source
+    assert "self._http.delete(" not in source
+    assert '"POST", "/ncc/' not in source

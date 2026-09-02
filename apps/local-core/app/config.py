@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     hub_trend_monthly_limit: int = 5_000
     hub_trend_daily_limit: int = 2_000
     hub_trend_rps: float = 10.0
+    hub_shopping_monthly_limit: int = 5_000
+    hub_shopping_daily_limit: int = 2_000
+    hub_shopping_rps: float = 10.0
     searchad_monthly_limit: int = 10_000
     searchad_daily_limit: int = 2_000
     searchad_rps: float = 1.0

@@ -8,9 +8,14 @@ from app.db import make_engine, make_session_factory
 from app.services.analyze import AnalyzeService
 from app.services.drafts import DraftService
 from app.services.publishing import PublishService
+from app.services.research import ResearchService
 from app.stores import SqlCacheStore, SqlUsageStore
 from providers.gateway import Gateway, ProviderPolicy
-from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
+from providers.naver_hub.client import (
+    NaverHubSearchClient,
+    NaverHubShoppingClient,
+    NaverHubTrendClient,
+)
 from providers.searchad.client import NaverSearchAdClient
 from providers.llm.base import LLMError
 from providers.llm.factory import build_llm_provider
@@ -85,6 +90,64 @@ def get_analyze_service() -> AnalyzeService:
 
 
 @lru_cache
+def get_research_service() -> ResearchService:
+    settings = get_settings()
+    gateway = get_gateway()
+    hub_search = hub_trend = hub_shopping = searchad = None
+    if settings.hub_configured:
+        hub_search = NaverHubSearchClient(
+            gateway,
+            settings.naver_hub_client_id,
+            settings.naver_hub_client_secret,
+            search_policy=ProviderPolicy(
+                "naver_hub_search",
+                settings.hub_search_monthly_limit,
+                daily_limit=settings.hub_search_daily_limit,
+                requests_per_second=settings.hub_search_rps,
+            ),
+        )
+        hub_trend = NaverHubTrendClient(
+            gateway,
+            settings.naver_hub_client_id,
+            settings.naver_hub_client_secret,
+            trend_policy=ProviderPolicy(
+                "naver_hub_trend",
+                settings.hub_trend_monthly_limit,
+                daily_limit=settings.hub_trend_daily_limit,
+                requests_per_second=settings.hub_trend_rps,
+            ),
+        )
+        hub_shopping = NaverHubShoppingClient(
+            gateway,
+            settings.naver_hub_client_id,
+            settings.naver_hub_client_secret,
+            shopping_policy=ProviderPolicy(
+                "naver_hub_shopping",
+                settings.hub_shopping_monthly_limit,
+                daily_limit=settings.hub_shopping_daily_limit,
+                requests_per_second=settings.hub_shopping_rps,
+            ),
+        )
+    if settings.searchad_configured:
+        searchad = NaverSearchAdClient(
+            gateway,
+            settings.naver_searchad_api_key,
+            settings.naver_searchad_secret_key,
+            settings.naver_searchad_customer_id,
+            policy=ProviderPolicy(
+                "searchad",
+                settings.searchad_monthly_limit,
+                daily_limit=settings.searchad_daily_limit,
+                requests_per_second=settings.searchad_rps,
+                max_concurrency=1,
+            ),
+        )
+    return ResearchService(
+        get_session_factory(), searchad, hub_search, hub_trend, hub_shopping
+    )
+
+
+@lru_cache
 def get_draft_service(use_llm: bool = False) -> DraftService:
     settings = get_settings()
     llm = None
@@ -111,5 +174,6 @@ def reset_caches() -> None:
     get_session_factory.cache_clear()
     get_gateway.cache_clear()
     get_analyze_service.cache_clear()
+    get_research_service.cache_clear()
     get_draft_service.cache_clear()
     get_publish_service.cache_clear()

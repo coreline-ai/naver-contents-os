@@ -5,7 +5,7 @@ import pytest
 
 from app.errors import SchemaError
 from providers.gateway import ProviderPolicy
-from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
+from providers.naver_hub.client import NaverHubSearchClient, NaverHubShoppingClient, NaverHubTrendClient
 from tests.conftest import make_gateway
 
 SEARCH_BODY = {
@@ -130,3 +130,90 @@ def test_trend_missing_ratio_is_schema_error():
     )
     with pytest.raises(SchemaError):
         client.get_search_trend("테스트")
+
+
+def test_empty_trend_results_return_explicit_empty_series():
+    client = NaverHubTrendClient(
+        make_gateway(),
+        "id",
+        "secret",
+        trend_policy=ProviderPolicy("hub_trend_empty", 1000),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"results": []})),
+    )
+    series = client.get_search_trend("테스트")
+    assert series.keyword_group == "테스트"
+    assert series.points == []
+
+
+def test_preflight_local_and_image_contracts():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/errata"):
+            return httpx.Response(200, text='{"errata":"네이버"}')
+        if request.url.path.endswith("/adult"):
+            return httpx.Response(200, json={"adult": "1"})
+        if request.url.path.endswith("/local"):
+            return httpx.Response(200, json={"total": 1, "items": [{"title": "카페", "roadAddress": "서울", "mapx": "1", "mapy": "2"}]})
+        return httpx.Response(200, json={"total": 1, "items": [{"title": "사진", "link": "https://image", "thumbnail": "https://thumb", "sizewidth": "800", "sizeheight": "bad"}]})
+
+    client = NaverHubSearchClient(
+        make_gateway(), "id", "secret",
+        search_policy=ProviderPolicy("hub_special", 1000),
+        transport=httpx.MockTransport(handler),
+    )
+    assert client.get_errata("spdlqj")["value"] == "네이버"
+    assert client.is_adult("테스트")["value"] is True
+    assert client.search_local("카페")["items"][0]["road_address"] == "서울"
+    image = client.search_images("사진")["items"][0]
+    assert image["width"] == 800 and image["height"] is None
+    assert {request.url.path for request in requests} == {
+        "/search/v1/errata", "/search/v1/adult", "/search/v1/local", "/search/v1/image"
+    }
+
+
+def test_multi_group_segment_trends_and_limits():
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        return httpx.Response(200, json={"results": [
+            {"title": group["groupName"], "keywords": group["keywords"], "data": [{"period": "2026-08", "ratio": 10}]}
+            for group in body["keywordGroups"]
+        ]})
+
+    client = NaverHubTrendClient(
+        make_gateway(), "id", "secret",
+        trend_policy=ProviderPolicy("hub_multi_trend", 1000),
+        transport=httpx.MockTransport(handler),
+    )
+    rows = client.get_search_trends(
+        [("A", ["a"]), ("B", ["b"])], device="mo", gender="f", ages=["3"]
+    )
+    assert [row.keyword_group for row in rows] == ["A", "B"]
+    assert rows[0].device == "mo" and rows[0].gender == "f" and rows[0].ages == ["3"]
+    assert bodies[0]["device"] == "mo"
+    with pytest.raises(ValueError):
+        client.get_search_trends([(str(i), [str(i)]) for i in range(6)])
+
+
+def test_shopping_keyword_trends_use_official_contract():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"results": [{"title": "러닝화", "keyword": ["러닝화"], "data": [{"period": "2026-08", "ratio": 44.5}]}]})
+
+    client = NaverHubShoppingClient(
+        make_gateway(), "id", "secret",
+        shopping_policy=ProviderPolicy("hub_shopping", 1000),
+        transport=httpx.MockTransport(handler),
+    )
+    rows = client.get_keyword_trends("50000000", ["러닝화"])
+    body = json.loads(requests[0].content)
+    assert requests[0].url.path == "/shopping/v1/category/keywords"
+    assert body["category"] == "50000000"
+    assert body["keyword"] == [{"name": "러닝화", "param": ["러닝화"]}]
+    assert rows[0]["points"][0]["ratio"] == 44.5

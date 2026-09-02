@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import date
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -11,6 +12,7 @@ from app.auth import require_token
 from app.services.analyze import AnalyzeService
 from app.services.drafts import DraftService
 from app.services.publishing import PublishService
+from app.services.research import ResearchService
 from intelligence.keyword.models import compact, normalize_keyword
 from planner.templates import is_active
 from planner.types import BlogType
@@ -30,6 +32,10 @@ def get_draft_service_factory() -> Callable[[bool], DraftService]:
 
 def get_publish_service() -> PublishService:
     return deps.get_publish_service()
+
+
+def get_research_service() -> ResearchService:
+    return deps.get_research_service()
 
 
 @router.get("/handshake")
@@ -63,6 +69,185 @@ def analyze_keyword(
     service: AnalyzeService = Depends(get_analyze_service),
 ) -> dict:
     return service.analyze(request.keyword, force_refresh=request.force_refresh, serp=request.serp)
+
+
+class KeywordResearchRequest(BaseModel):
+    keyword: str = Field(min_length=1, max_length=100)
+    force_refresh: bool = False
+
+    @field_validator("keyword")
+    @classmethod
+    def normalize_research_keyword(cls, value: str) -> str:
+        normalized = normalize_keyword(value)
+        if not normalized:
+            raise ValueError("keyword must contain non-whitespace characters")
+        return normalized
+
+
+class GraphRequest(KeywordResearchRequest):
+    snapshot_id: int | None = Field(default=None, ge=1)
+
+
+class CommercialRequest(BaseModel):
+    keywords: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        min_length=1, max_length=20
+    )
+    device: Literal["PC", "MOBILE"] = "PC"
+    force_refresh: bool = False
+
+
+class SpecializedRequest(KeywordResearchRequest):
+    mode: Literal["general", "local", "shopping", "image"] = "general"
+    category: str = Field(default="", max_length=30)
+
+    @model_validator(mode="after")
+    def require_shopping_category(self):
+        if self.mode == "shopping" and not self.category.strip():
+            raise ValueError("category is required for shopping mode")
+        return self
+
+
+class WatchlistCreateRequest(BaseModel):
+    keyword: str = Field(min_length=1, max_length=100)
+
+    @field_validator("keyword")
+    @classmethod
+    def normalize_watch_keyword(cls, value: str) -> str:
+        normalized = normalize_keyword(value)
+        if not normalized:
+            raise ValueError("keyword must contain non-whitespace characters")
+        return normalized
+
+
+class WatchlistRefreshRequest(BaseModel):
+    item_ids: list[Annotated[int, Field(ge=1)]] = Field(min_length=1, max_length=50)
+    force_refresh: bool = False
+
+
+class AdPerformanceRequest(BaseModel):
+    since: date
+    until: date
+    force_refresh: bool = False
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.since > self.until:
+            raise ValueError("since must not be after until")
+        if (self.until - self.since).days > 365:
+            raise ValueError("performance period must be 365 days or less")
+        return self
+
+
+@router.get("/capabilities")
+def get_capabilities(service: ResearchService = Depends(get_research_service)) -> dict:
+    return service.capabilities()
+
+
+@router.get("/snapshots/{snapshot_id}")
+def get_snapshot(
+    snapshot_id: int, service: ResearchService = Depends(get_research_service)
+) -> dict:
+    snapshot = service.snapshot(snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "snapshot not found"})
+    return snapshot
+
+
+@router.post("/keywords/preflight")
+def preflight_keyword(
+    request: KeywordResearchRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.preflight(request.keyword, force_refresh=request.force_refresh)
+
+
+@router.post("/research/graph")
+def build_keyword_graph(
+    request: GraphRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.graph(
+        request.keyword,
+        snapshot_id=request.snapshot_id,
+        force_refresh=request.force_refresh,
+    )
+
+
+@router.post("/research/commercial")
+def analyze_commercial_intent(
+    request: CommercialRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.commercial(
+        request.keywords, device=request.device, force_refresh=request.force_refresh
+    )
+
+
+@router.post("/research/audience")
+def analyze_audience(
+    request: KeywordResearchRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.audience(request.keyword, force_refresh=request.force_refresh)
+
+
+@router.post("/research/specialized")
+def analyze_specialized(
+    request: SpecializedRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.specialized(
+        request.keyword,
+        request.mode,
+        category=request.category,
+        force_refresh=request.force_refresh,
+    )
+
+
+@router.get("/watchlist")
+def list_watchlist(service: ResearchService = Depends(get_research_service)) -> dict:
+    return service.list_watchlist()
+
+
+@router.post("/watchlist", status_code=201)
+def add_watchlist(
+    request: WatchlistCreateRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    try:
+        return service.add_watchlist(request.keyword)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "watchlist_limit", "message": str(exc)}) from exc
+
+
+@router.delete("/watchlist/{item_id}", status_code=204)
+def delete_watchlist(
+    item_id: int, service: ResearchService = Depends(get_research_service)
+) -> None:
+    if not service.delete_watchlist(item_id):
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "watchlist item not found"})
+
+
+@router.post("/watchlist/refresh")
+def refresh_watchlist(
+    request: WatchlistRefreshRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.refresh_watchlist(
+        request.item_ids, force_refresh=request.force_refresh
+    )
+
+
+@router.post("/research/ad-performance")
+def analyze_ad_performance(
+    request: AdPerformanceRequest,
+    service: ResearchService = Depends(get_research_service),
+) -> dict:
+    return service.ad_performance(
+        request.since.isoformat(),
+        request.until.isoformat(),
+        force_refresh=request.force_refresh,
+    )
 
 
 class PlanItemInput(BaseModel):

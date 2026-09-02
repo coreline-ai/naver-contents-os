@@ -210,3 +210,185 @@ export interface BlogInspection {
   likes: number | null;
   comments: number | null;
 }
+
+export type ProviderState = 'configured' | 'unsupported' | 'empty' | 'partial' | 'ok' | 'unconfigured';
+
+export interface QuotaWindow {
+  period: string;
+  used: number;
+  limit: number;
+}
+
+export interface QuotaStatus {
+  provider: string;
+  monthly: QuotaWindow;
+  daily: QuotaWindow | null;
+  ratio: number;
+  warning: boolean;
+  blocked: boolean;
+}
+
+export interface CapabilityProvider {
+  status: ProviderState;
+  features: string[];
+  quota: QuotaStatus | null;
+}
+
+export interface CapabilitiesResponse {
+  collected_at: string;
+  providers: Record<string, CapabilityProvider>;
+  searchad_access: 'read_only';
+}
+
+export interface PreflightResponse {
+  keyword: string;
+  correction: string | null;
+  sensitive: boolean | null;
+  data_status: Record<string, string>;
+  from_cache?: boolean;
+  collected_at: string;
+}
+
+export interface ResearchGraphNode {
+  id: string;
+  keyword: string;
+  depth: number;
+  volume: number | null;
+  volume_masked: boolean;
+  competition: string | null;
+  cluster: string;
+  blog_total: number | null;
+  trend_delta: number | null;
+  enrichment_status: string;
+}
+
+export interface ResearchGraphEdge {
+  source: string;
+  target: string;
+}
+
+export interface ResearchGraphResponse {
+  keyword: string;
+  snapshot_id?: number | null;
+  status: string;
+  nodes: ResearchGraphNode[];
+  edges: ResearchGraphEdge[];
+  clusters?: KeywordCluster[];
+  call_budget: { actual: number; maximum: number };
+  caps?: Record<string, number>;
+  collected_at: string;
+}
+
+export interface CommercialRow {
+  keyword: string;
+  device: string;
+  average_position_bid: number | null;
+  minimum_exposure_bid: number | null;
+  median_bid: number | null;
+  estimated_impressions: number | null;
+  estimated_clicks: number | null;
+  commercial_score: number | null;
+}
+
+export interface CommercialResponse {
+  status: string;
+  data_status?: Record<string, string>;
+  score_version: string;
+  score_note?: string;
+  rows: CommercialRow[];
+  collected_at?: string;
+}
+
+export interface SegmentSeries {
+  label: string;
+  points: TrendPoint[];
+  collected_at: string;
+  from_cache: boolean;
+}
+
+export interface AudienceResponse {
+  keyword: string;
+  status: string;
+  data_status?: Record<string, string>;
+  segments: Record<string, SegmentSeries[]>;
+  normalization?: 'independent';
+  warning?: string;
+  collected_at?: string;
+}
+
+export interface SpecializedResponse {
+  mode: 'general' | 'local' | 'shopping' | 'image';
+  keyword: string;
+  status: string;
+  items?: Array<Record<string, unknown>>;
+  series?: Array<Record<string, unknown>>;
+  total?: number | null;
+  category?: string;
+  plan_candidates?: string[];
+  rights_notice?: string;
+  warning?: string;
+  collected_at?: string;
+}
+
+export interface WatchSnapshot {
+  comparison_key: string;
+  collected_at: string;
+  monthly_searches: number | null;
+  volume_masked: boolean;
+  latest_ratio: number | null;
+  latest_period: string | null;
+  data_status: Record<string, string>;
+}
+
+export interface WatchlistItem {
+  id: number;
+  keyword: string;
+  status: string;
+  comparison_key: string;
+  last_snapshot: WatchSnapshot | null;
+  previous_snapshot: WatchSnapshot | null;
+  delta: number | null;
+  direction: '상승' | '보합' | '하락' | '비교 불가';
+  stale: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WatchlistResponse {
+  items: WatchlistItem[];
+  cap: number;
+}
+
+export interface AdPerformanceRow {
+  id: string;
+  keyword: string;
+  campaign_id: string | null;
+  adgroup_id: string | null;
+  impressions: number | null;
+  clicks: number | null;
+  ctr: number | null;
+  cpc: number | null;
+  cost: number | null;
+  conversions: number | null;
+  conversion_value: number | null;
+  roas: number | null;
+  content: { state: 'missing' | 'stale' | 'covered'; draft_count: number; last_draft_at: string | null };
+}
+
+export interface AdPerformanceResponse {
+  status: string;
+  read_only: true;
+  period?: { since: string; until: string };
+  data_status?: Record<string, string>;
+  campaign_count?: number;
+  adgroup_count?: number;
+  rows: AdPerformanceRow[];
+  recommendations: Array<{
+    keyword: string;
+    reason: string;
+    content_state: string;
+    clicks: number | null;
+    conversions: number | null;
+  }>;
+  collected_at?: string;
+}

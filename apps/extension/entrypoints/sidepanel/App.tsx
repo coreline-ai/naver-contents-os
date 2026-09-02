@@ -3,11 +3,14 @@ import type {
   DraftDetail,
   DraftGenerationMode,
   PlanItem,
+  PreflightResponse,
   PublishJob,
   SerpObservation,
+  SpecializedResponse,
 } from '@ncos/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { browser } from 'wxt/browser';
 import { CoreClient, CoreError } from '~/lib/core';
 import { MSG_GET_BLOG, MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
 import type { BlogParse } from '~/lib/parsers/blog';
@@ -23,6 +26,9 @@ const STATUS_LABEL: Record<string, string> = {
   request: '요청 오류',
   schema: '스키마 오류',
   upstream_unreachable: '연결 오류',
+  partial: '부분 데이터',
+  empty: '데이터 없음',
+  unsupported: '미지원',
 };
 
 const CONFIDENCE_LABEL: Record<string, string> = {
@@ -31,6 +37,15 @@ const CONFIDENCE_LABEL: Record<string, string> = {
   medium: '보통',
   high: '높음',
 };
+
+function safeExternalUrl(value: unknown): string {
+  try {
+    const url = new URL(String(value));
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '#';
+  } catch {
+    return '#';
+  }
+}
 
 export default function App() {
   const settings = useSettings();
@@ -43,6 +58,14 @@ export default function App() {
   const [publishJobId, setPublishJobId] = useState<number | null>(null);
   const [blogInspection, setBlogInspection] = useState<BlogParse | null>(null);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  const [sectionTab, setSectionTab] = useState<'analysis' | 'plan' | 'draft'>('analysis');
+  const [analysisTab, setAnalysisTab] = useState<'overview' | 'keyword' | 'audience' | 'commercial'>('overview');
+  const [mode, setMode] = useState<'general' | 'local' | 'shopping' | 'image'>('general');
+  const [shoppingCategory, setShoppingCategory] = useState('');
+  const [preflight, setPreflight] = useState<PreflightResponse | null>(null);
+  const [preflightPending, setPreflightPending] = useState(false);
+  const [sensitiveKeyword, setSensitiveKeyword] = useState(false);
+  const [specialized, setSpecialized] = useState<SpecializedResponse | null>(null);
   const analysisEpoch = useRef(0);
   const draftEpoch = useRef(0);
 
@@ -73,7 +96,10 @@ export default function App() {
     mutationFn: ({ keyword: kw, force, serp: requestSerp }) =>
       client.analyze(kw, requestSerp, force ?? false),
     onSuccess: (data, variables) => {
-      if (variables.requestId === analysisEpoch.current) setResult(data);
+      if (variables.requestId === analysisEpoch.current) {
+        setResult(data);
+        setSectionTab('analysis');
+      }
     },
   });
 
@@ -98,7 +124,10 @@ export default function App() {
       return client.getDraft(created.draft_id);
     },
     onSuccess: (data, variables) => {
-      if (variables.requestId === draftEpoch.current) setDraft(data);
+      if (variables.requestId === draftEpoch.current) {
+        setDraft(data);
+        setSectionTab('draft');
+      }
     },
   });
 
@@ -148,6 +177,10 @@ export default function App() {
     setResult(null);
     setDraft(null);
     setPublishJobId(null);
+    setPreflight(null);
+    setSensitiveKeyword(false);
+    setSpecialized(null);
+    setSectionTab('analysis');
     return requestId;
   }
 
@@ -172,9 +205,54 @@ export default function App() {
     analyze.mutate({ keyword: targetKeyword, force, serp: requestSerp, requestId });
   }
 
+  async function beginAnalysis(targetKeyword: string) {
+    if (!targetKeyword.trim() || preflightPending) return;
+    setPreflightPending(true);
+    setPreflight(null);
+    try {
+      const checked = await client.preflight(targetKeyword);
+      setPreflight(checked);
+      setSensitiveKeyword(checked.sensitive !== false);
+      if (checked.correction || checked.sensitive === true) return;
+    } catch {
+      // Preflight is optional. Missing permission or an older Local Core must not
+      // block the existing analysis path.
+    } finally {
+      setPreflightPending(false);
+    }
+    if (mode !== 'general') {
+      try {
+        setSpecialized(await client.specialized(targetKeyword, mode, shoppingCategory));
+      } catch {
+        setSpecialized(null);
+      }
+    }
+    runAnalysis(targetKeyword, false, null);
+  }
+
+  async function continueAfterPreflight(targetKeyword: string) {
+    setKeyword(targetKeyword);
+    setPreflight(null);
+    if (mode !== 'general') {
+      try {
+        setSpecialized(await client.specialized(targetKeyword, mode, shoppingCategory));
+      } catch {
+        setSpecialized(null);
+      }
+    }
+    runAnalysis(targetKeyword, false, null);
+  }
+
+  function openWorkspace() {
+    if (!result) return;
+    const sidepanelUrl = browser.runtime.getURL('/sidepanel.html');
+    const url = `${sidepanelUrl.slice(0, sidepanelUrl.lastIndexOf('/') + 1)}research.html?keyword=${encodeURIComponent(result.keyword)}&snapshot_id=${result.snapshot_id}`;
+    void browser.tabs.create({ url });
+  }
+
   function analyzeSuggestedKeyword(nextKeyword: string) {
     changeKeyword(nextKeyword);
-    runAnalysis(nextKeyword, false, null);
+    void beginAnalysis(nextKeyword);
   }
 
   function runCreateDraft(planItem: PlanItem, mode: DraftGenerationMode) {
@@ -272,18 +350,61 @@ export default function App() {
           <input
             value={keyword}
             onChange={(e) => changeKeyword(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && runAnalysis(keyword)}
+            onKeyDown={(e) => e.key === 'Enter' && void beginAnalysis(keyword)}
             placeholder="키워드 입력"
             className="w-full rounded border border-slate-300 px-2 py-1.5"
           />
           <button
             className="whitespace-nowrap rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
-            disabled={!keyword || !connected || (currentAnalysisMutation && analyze.isPending)}
-            onClick={() => runAnalysis(keyword)}
+            disabled={!keyword || !connected || preflightPending || (currentAnalysisMutation && analyze.isPending) || (mode === 'shopping' && !shoppingCategory.trim())}
+            onClick={() => void beginAnalysis(keyword)}
           >
-            {currentAnalysisMutation && analyze.isPending ? '분석 중…' : '분석'}
+            {preflightPending ? '확인 중…' : currentAnalysisMutation && analyze.isPending ? '분석 중…' : '분석'}
           </button>
         </div>
+        <div className="mt-2 flex flex-wrap gap-1" aria-label="분석 모드">
+          {([
+            ['general', '일반'],
+            ['local', '지역'],
+            ['shopping', '쇼핑'],
+            ['image', '이미지'],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              className={`rounded px-2 py-0.5 text-[11px] ${mode === value ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600'}`}
+              onClick={() => { setMode(value); setSpecialized(null); }}
+            >
+              {label}
+            </button>
+          ))}
+          {mode === 'shopping' && (
+            <input
+              value={shoppingCategory}
+              onChange={(event) => setShoppingCategory(event.target.value)}
+              className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-0.5 text-[11px]"
+              placeholder="쇼핑 category code"
+            />
+          )}
+        </div>
+        {preflight && (preflight.correction || preflight.sensitive === true) && (
+          <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs">
+            {preflight.correction && (
+              <p>교정 제안: <b>{preflight.correction}</b></p>
+            )}
+            {preflight.sensitive === true && (
+              <p className="mt-1 text-rose-700">민감 키워드로 판별되어 AI 초안은 비활성화됩니다.</p>
+            )}
+            <div className="mt-2 flex gap-1">
+              {preflight.correction && (
+                <button className="rounded bg-amber-600 px-2 py-1 text-white" onClick={() => void continueAfterPreflight(preflight.correction!)}>교정 사용</button>
+              )}
+              <button className="rounded border border-amber-400 px-2 py-1" onClick={() => void continueAfterPreflight(preflight.keyword)}>원문 유지</button>
+            </div>
+          </div>
+        )}
+        {preflight && preflight.sensitive === null && preflight.data_status.adult !== 'ok' && (
+          <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">민감 키워드 판별을 완료하지 못해 AI 초안을 안전하게 비활성화했습니다.</p>
+        )}
         <div className="mt-2 flex items-center gap-2 text-xs">
           <button className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-100" onClick={() => void pullCurrentSearch()}>
             현재 검색어 가져오기
@@ -310,25 +431,64 @@ export default function App() {
       </section>
 
       {result && (
+        <nav className="mt-3 grid grid-cols-3 rounded-lg border border-slate-200 bg-white p-1" aria-label="작업 단계">
+          {([
+            ['analysis', '분석'],
+            ['plan', '플랜'],
+            ['draft', '초안'],
+          ] as const).map(([value, label]) => (
+            <button key={value} className={`rounded py-1 text-xs font-medium ${sectionTab === value ? 'bg-emerald-600 text-white' : 'text-slate-500 hover:bg-slate-100'}`} onClick={() => setSectionTab(value)}>{label}</button>
+          ))}
+        </nav>
+      )}
+
+      {result && (
         <>
-          <ScoreCard result={result} />
-          <LandscapeCard result={result} />
-          <RelatedKeywordsCard result={result} onSelect={analyzeSuggestedKeyword} />
-          <TrendCard result={result} />
-          <ClusterCard result={result} onSelect={analyzeSuggestedKeyword} />
-          <SearchEvidenceCard result={result} />
-          <PlanCard
-            plan={result.plan}
-            creating={currentDraftMutation && createDraft.isPending}
-            onCreate={runCreateDraft}
-          />
-          <QuestionsCard result={result} />
+          {sectionTab === 'analysis' && (
+            <>
+              <div className="mt-2 flex gap-1 overflow-x-auto">
+                {([
+                  ['overview', '개요'],
+                  ['keyword', '키워드'],
+                  ['audience', '타깃'],
+                  ['commercial', '상업성'],
+                ] as const).map(([value, label]) => (
+                  <button key={value} className={`rounded-full px-2 py-1 text-[11px] ${analysisTab === value ? 'bg-slate-800 text-white' : 'bg-white text-slate-500'}`} onClick={() => setAnalysisTab(value)}>{label}</button>
+                ))}
+              </div>
+              {(analysisTab === 'overview' || analysisTab === 'commercial') && <ScoreCard result={result} />}
+              {(analysisTab === 'overview' || analysisTab === 'commercial') && <LandscapeCard result={result} />}
+              {(analysisTab === 'overview' || analysisTab === 'keyword') && <RelatedKeywordsCard result={result} onSelect={analyzeSuggestedKeyword} />}
+              {(analysisTab === 'overview' || analysisTab === 'audience') && <TrendCard result={result} />}
+              {(analysisTab === 'overview' || analysisTab === 'keyword') && <ClusterCard result={result} onSelect={analyzeSuggestedKeyword} />}
+              {analysisTab === 'overview' && <SearchEvidenceCard result={result} />}
+              {specialized && <SpecializedCard result={specialized} />}
+              <button className="mt-3 w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white" onClick={openWorkspace}>Research Workspace 전체화면 열기</button>
+              <PlanCard
+                plan={result.plan}
+                creating={currentDraftMutation && createDraft.isPending}
+                onCreate={runCreateDraft}
+                allowLlm={!sensitiveKeyword}
+              />
+            </>
+          )}
+          {sectionTab === 'plan' && (
+            <>
+              <PlanCard
+                plan={result.plan}
+                creating={currentDraftMutation && createDraft.isPending}
+                onCreate={runCreateDraft}
+                allowLlm={!sensitiveKeyword}
+              />
+              <QuestionsCard result={result} />
+            </>
+          )}
           {currentDraftMutation && createDraft.isError && (
             <p className="mt-3 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">
               초안 오류({createDraft.error.code}): {createDraft.error.message}
             </p>
           )}
-          {draft && (
+          {sectionTab === 'draft' && draft && (
             <DraftCard
               draft={draft}
               savingVersion={addDraftVersion.isPending}
@@ -355,6 +515,7 @@ export default function App() {
               }
             />
           )}
+          {sectionTab === 'draft' && !draft && <p className="mt-3 rounded bg-white p-3 text-xs text-slate-500">플랜에서 초안을 먼저 생성하세요.</p>}
         </>
       )}
       {blogInspection && <BlogInspectionCard inspection={blogInspection} />}
@@ -571,7 +732,7 @@ export function SearchEvidenceCard({ result }: { result: AnalyzeResponse }) {
         <div className="mt-2">
           <h3 className="text-xs font-medium text-emerald-700">Browser SERP</h3>
           <ol className="mt-1 space-y-1 text-[11px]">
-            {browserItems.slice(0, 10).map((item) => <li key={`${item.rank}-${item.url}`} className="flex gap-1.5"><span className="w-4 shrink-0 tabular-nums text-slate-400">{item.rank}</span><div className="min-w-0"><a href={item.url} target="_blank" rel="noreferrer" className="block truncate text-sky-700">{item.title || item.url}</a><span className="text-[10px] text-slate-400">{item.result_type}{item.is_ad ? ' · 광고' : ''}{item.posted_at ? ` · ${item.posted_at}` : ''}</span></div></li>)}
+            {browserItems.slice(0, 10).map((item) => <li key={`${item.rank}-${item.url}`} className="flex gap-1.5"><span className="w-4 shrink-0 tabular-nums text-slate-400">{item.rank}</span><div className="min-w-0"><a href={safeExternalUrl(item.url)} target="_blank" rel="noreferrer" className="block truncate text-sky-700">{item.title || item.url}</a><span className="text-[10px] text-slate-400">{item.result_type}{item.is_ad ? ' · 광고' : ''}{item.posted_at ? ` · ${item.posted_at}` : ''}</span></div></li>)}
           </ol>
           {result.serp && <div className="mt-1"><DataMeta source={result.serp.source} collectedAt={result.serp.collected_at} /></div>}
         </div>
@@ -580,9 +741,53 @@ export function SearchEvidenceCard({ result }: { result: AnalyzeResponse }) {
         <div className="mt-3 border-t border-slate-100 pt-2">
           <h3 className="text-xs font-medium text-indigo-700">API HUB 블로그 결과</h3>
           <ol className="mt-1 space-y-1 text-[11px]">
-            {apiItems.slice(0, 10).map((item, index) => <li key={`${index}-${item.link}`} className="flex gap-1.5"><span className="w-4 shrink-0 tabular-nums text-slate-400">{index + 1}</span><div className="min-w-0"><a href={item.link} target="_blank" rel="noreferrer" className="block truncate text-sky-700">{item.title || item.link}</a><span className="text-[10px] text-slate-400">{item.author || '작성자 미상'}{item.posted_at ? ` · ${item.posted_at}` : ''}</span></div></li>)}
+            {apiItems.slice(0, 10).map((item, index) => <li key={`${index}-${item.link}`} className="flex gap-1.5"><span className="w-4 shrink-0 tabular-nums text-slate-400">{index + 1}</span><div className="min-w-0"><a href={safeExternalUrl(item.link)} target="_blank" rel="noreferrer" className="block truncate text-sky-700">{item.title || item.link}</a><span className="text-[10px] text-slate-400">{item.author || '작성자 미상'}{item.posted_at ? ` · ${item.posted_at}` : ''}</span></div></li>)}
           </ol>
           {result.landscape && <div className="mt-1"><DataMeta source={result.landscape.source} collectedAt={result.landscape.collected_at} fromCache={result.landscape.from_cache} /></div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function SpecializedCard({ result }: { result: SpecializedResponse }) {
+  const rows = result.items ?? [];
+  return (
+    <section className="mt-3 rounded-lg border border-indigo-200 bg-white p-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">특화 분석 · {result.mode}</h2>
+        <span className="text-[10px] text-slate-400">{STATUS_LABEL[result.status] ?? result.status}</span>
+      </div>
+      {result.rights_notice && <p className="mt-1 rounded bg-amber-50 p-2 text-[10px] text-amber-800">{result.rights_notice}</p>}
+      {result.warning && <p className="mt-1 text-[10px] text-slate-500">{result.warning}</p>}
+      {rows.length > 0 && (
+        <ul className="mt-2 space-y-1 text-xs">
+          {rows.slice(0, 5).map((row, index) => (
+            <li key={`${index}-${String(row.link ?? '')}`} className="rounded bg-slate-50 p-2">
+              {Boolean(row.thumbnail) && <img src={safeExternalUrl(row.thumbnail)} alt="" className="mb-2 h-20 w-full rounded object-cover" />}
+              <a href={safeExternalUrl(row.link)} target="_blank" rel="noreferrer" className="font-medium text-sky-700">
+                {String(row.title ?? '결과')}
+              </a>
+              <p className="mt-0.5 text-[10px] text-slate-500">
+                {String(row.category ?? row.road_address ?? '')}
+                {row.width ? ` · ${String(row.width)}×${String(row.height ?? '—')}` : ''}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(result.series ?? []).length > 0 && (
+        <ul className="mt-2 space-y-1 text-xs">
+          {(result.series ?? []).map((row, index) => {
+            const points = Array.isArray(row.points) ? row.points as Array<{ period?: string; ratio?: number }> : [];
+            const latest = points.at(-1);
+            return <li key={`${index}-${String(row.title ?? '')}`} className="flex justify-between rounded bg-slate-50 px-2 py-1"><span>{String(row.title ?? result.keyword)}</span><span>{latest?.ratio == null ? '결측' : `상대 ${latest.ratio.toFixed(1)}`}</span></li>;
+          })}
+        </ul>
+      )}
+      {result.plan_candidates && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {result.plan_candidates.map((item) => <span key={item} className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-700">{item}</span>)}
         </div>
       )}
     </section>
@@ -593,15 +798,18 @@ export function PlanCard({
   plan,
   creating,
   onCreate,
+  allowLlm = true,
 }: {
   plan: PlanItem[];
   creating: boolean;
   onCreate: (item: PlanItem, mode: DraftGenerationMode) => void;
+  allowLlm?: boolean;
 }) {
   if (plan.length === 0) return null;
   return (
     <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
       <h2 className="font-semibold">15편 콘텐츠 플랜</h2>
+      {!allowLlm && <p className="mt-1 rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800">민감 키워드 판별이 완료되지 않았거나 민감 키워드로 확인되어 AI 초안이 비활성화되었습니다.</p>}
       <ol className="mt-2 space-y-1.5">
         {plan.map((p) => (
           <li key={p.order} className="rounded border border-slate-100 p-2">
@@ -623,8 +831,8 @@ export function PlanCard({
               </button>
               <button
                 className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] text-white disabled:opacity-40"
-                disabled={creating || p.generation_status !== 'ready'}
-                title={p.generation_status === 'ready' ? '설정된 LLM으로 초안 생성' : '현재 LLM 생성 미지원 유형'}
+                disabled={creating || p.generation_status !== 'ready' || !allowLlm}
+                title={!allowLlm ? '민감 키워드 판별로 AI 초안 비활성화' : p.generation_status === 'ready' ? '설정된 LLM으로 초안 생성' : '현재 LLM 생성 미지원 유형'}
                 onClick={() => onCreate(p, 'llm')}
               >
                 AI 초안

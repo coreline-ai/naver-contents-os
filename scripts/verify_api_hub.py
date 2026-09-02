@@ -4,6 +4,7 @@ Prints status codes and top-level schema only — never credentials or full bodi
 Usage:
     uv run python scripts/verify_api_hub.py            # blog + trend
     uv run python scripts/verify_api_hub.py --all      # + cafe/kin/web/news/errata path check
+    uv run python scripts/verify_api_hub.py --research # + adult/local/image/shopping live checks
 """
 
 from __future__ import annotations
@@ -28,6 +29,9 @@ SEARCH_PATHS = {
     "web": "/search/v1/webkr",
     "news": "/search/v1/news",
     "errata": "/search/v1/errata",
+    "adult": "/search/v1/adult",
+    "local": "/search/v1/local",
+    "image": "/search/v1/image",
 }
 
 
@@ -56,19 +60,35 @@ def main() -> int:
         "X-NCP-APIGW-API-KEY": settings.naver_hub_client_secret,
     }
     check_all = "--all" in sys.argv
+    check_research = "--research" in sys.argv
     failures = 0
     FIXTURES.mkdir(parents=True, exist_ok=True)
 
     with httpx.Client(base_url=BASE, headers=headers, timeout=15) as client:
-        paths = SEARCH_PATHS if check_all else {"blog": SEARCH_PATHS["blog"]}
+        if check_research:
+            names = ["blog", "errata", "adult", "local", "image"]
+        elif check_all:
+            names = ["blog", "cafe", "kin", "web", "news", "errata"]
+        else:
+            names = ["blog"]
+        paths = {name: SEARCH_PATHS[name] for name in names}
         for name, path in paths.items():
-            r = client.get(path, params={"query": "테스트", "display": 10, "start": 1})
+            params = {"query": "테스트"}
+            if name == "local":
+                params.update({"display": 5, "start": 1, "sort": "comment"})
+            elif name == "image":
+                params.update({"display": 10, "start": 1, "sort": "sim", "filter": "all"})
+            elif name not in {"errata", "adult"}:
+                params.update({"display": 10, "start": 1})
+            r = client.get(path, params=params)
             # HUB search replies with JSON bodies labeled text/plain — never trust content-type.
             try:
                 body = r.json()
             except ValueError:
                 body = {}
-            ok = r.status_code == 200 and ("total" in body or "items" in body or "errata" in body)
+            ok = r.status_code == 200 and (
+                "total" in body or "items" in body or "errata" in body or body.get("adult") in {"0", "1"}
+            )
             print(f"search/{name:7s} {path:28s} -> {r.status_code} "
                   f"total={'Y' if 'total' in body else '-'} items={'Y' if 'items' in body else '-'} "
                   f"{'OK' if ok else 'FAIL keys=' + ','.join(sorted(body)[:6])}")
@@ -98,6 +118,23 @@ def main() -> int:
                 json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
         else:
             failures += 1
+
+        if check_research:
+            shopping_body = {
+                "startDate": (today - dt.timedelta(days=365)).strftime("%Y-%m-01"),
+                "endDate": today.strftime("%Y-%m-%d"),
+                "timeUnit": "month",
+                "category": "50000000",
+                "keyword": [{"name": "러닝화", "param": ["러닝화"]}],
+            }
+            r = client.post("/shopping/v1/category/keywords", json=shopping_body)
+            body = r.json() if r.status_code == 200 else {}
+            rows = body.get("results", [])
+            has_ratio = bool(rows and rows[0].get("data") and "ratio" in rows[0]["data"][0])
+            ok = r.status_code == 200 and has_ratio
+            print(f"shopping         /shopping/v1/category/keywords -> {r.status_code} ratio={'Y' if has_ratio else 'N'} {'OK' if ok else 'FAIL'}")
+            if not ok:
+                failures += 1
 
     print("RESULT:", "PASS" if failures == 0 else f"FAIL ({failures})")
     return 0 if failures == 0 else 1

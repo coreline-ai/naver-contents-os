@@ -1,7 +1,9 @@
 """P0 gate: verify SearchAd credentials with one /keywordstool call.
 
 Prints status and schema only — never credentials, signatures, or headers.
-Usage: uv run python scripts/verify_searchad.py [hintKeyword]
+Usage:
+    uv run python scripts/verify_searchad.py [hintKeyword]
+    uv run python scripts/verify_searchad.py --research [hintKeyword]
 """
 
 from __future__ import annotations
@@ -34,7 +36,9 @@ def main() -> int:
         print("BLOCKED: NAVER_SEARCHAD_API_KEY / SECRET_KEY / CUSTOMER_ID not set in .env")
         return 2
 
-    hint = sys.argv[1] if len(sys.argv) > 1 else "애드포스트"
+    args = [arg for arg in sys.argv[1:] if arg != "--research"]
+    research = "--research" in sys.argv
+    hint = args[0] if args else "애드포스트"
     headers = auth_headers(
         "GET", URI,
         settings.naver_searchad_api_key,
@@ -59,6 +63,42 @@ def main() -> int:
     fixture = {"keywordList": [{k: item.get(k) for k in KEEP_FIELDS} for item in kw_list[:3]]}
     (FIXTURES / "searchad_keywordstool.json").write_text(
         json.dumps(fixture, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if research:
+        failures = 0
+        with httpx.Client(base_url=BASE, timeout=15) as client:
+            estimate_uri = "/estimate/median-bid/keyword"
+            r = client.post(
+                estimate_uri,
+                json={"device": "PC", "period": "MONTH", "items": [hint]},
+                headers=auth_headers(
+                    "POST", estimate_uri,
+                    settings.naver_searchad_api_key,
+                    settings.naver_searchad_secret_key,
+                    settings.naver_searchad_customer_id,
+                ),
+            )
+            ok = r.status_code == 200
+            print(f"median-bid   -> {r.status_code} {'OK' if ok else 'FAIL'}")
+            failures += 0 if ok else 1
+
+            for name, uri in (("campaigns", "/ncc/campaigns"), ("adgroups", "/ncc/adgroups")):
+                response = client.get(
+                    uri,
+                    headers=auth_headers(
+                        "GET", uri,
+                        settings.naver_searchad_api_key,
+                        settings.naver_searchad_secret_key,
+                        settings.naver_searchad_customer_id,
+                    ),
+                )
+                rows = response.json() if response.status_code == 200 else []
+                ok = response.status_code == 200 and isinstance(rows, list)
+                print(f"{name:12s} -> {response.status_code} rows={len(rows) if isinstance(rows, list) else '-'} {'OK' if ok else 'FAIL'}")
+                failures += 0 if ok else 1
+        if failures:
+            print(f"RESULT: FAIL ({failures})")
+            return 1
     print("RESULT: PASS")
     return 0
 

@@ -103,6 +103,25 @@ class TrendSeries(SourcedModel):
     ages: list[str] = Field(default_factory=list)
 
 
+class LocalSearchItem(BaseModel):
+    title: str
+    link: str = ""
+    category: str = ""
+    description: str = ""
+    address: str = ""
+    road_address: str = ""
+    mapx: str = ""
+    mapy: str = ""
+
+
+class ImageSearchItem(BaseModel):
+    title: str
+    link: str = ""
+    thumbnail: str = ""
+    width: int | None = None
+    height: int | None = None
+
+
 class SerpResult(BaseModel):
     rank: int
     result_type: str = ""  # blog | cafe | news | ad | etc
