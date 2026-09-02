@@ -127,11 +127,13 @@ min(일 한도, 월 한도, 콘솔 사용자 설정 한도, RPS 제한)
 
 개발 초기 권장 자체 한도:
 
-| API | 월 한도 예시 |
-|---|---:|
-| NAVER Search | 50,000 |
-| Search Trend | 5,000 |
-| Shopping Insight | 5,000 |
+| API | 월 한도 | 일 한도 | RPS |
+|---|---:|---:|---:|
+| NAVER Search | 50,000 | 10,000 | 25 |
+| Search Trend | 5,000 | 2,000 | 10 |
+| SearchAd keywordstool | 10,000 | 2,000 | 1 |
+
+이 값은 `.env.example`에서 조정할 수 있다. Local Gateway는 cache hit를 제외한 실제 외부 전송 시도마다 일·월 사용량을 하나의 DB transaction으로 예약하고, 어느 한도라도 도달하면 전송 전에 전체 예약을 취소한다. 429 재시도·4xx·transport 실패도 실제 시도이므로 사용량에 포함하며 `Retry-After`와 provider별 RPS를 함께 적용한다.
 
 콘솔의 `Application → 한도 및 알림`에서 일·월 한도와 임계치 알림을 설정하고, **통보 대상자도 별도로 등록**해야 실제 알림을 받을 수 있습니다. 근거: [Application 이용 관리](https://guide.ncloud-docs.com/docs/apihub-application)
 

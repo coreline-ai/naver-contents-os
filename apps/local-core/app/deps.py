@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.db import make_engine, make_session_factory
 from app.services.analyze import AnalyzeService
 from app.services.drafts import DraftService
+from app.services.publishing import PublishService
 from app.stores import SqlCacheStore, SqlUsageStore
 from providers.gateway import Gateway, ProviderPolicy
 from providers.naver_hub.client import NaverHubSearchClient, NaverHubTrendClient
@@ -47,13 +48,23 @@ def get_analyze_service() -> AnalyzeService:
             gateway,
             settings.naver_hub_client_id,
             settings.naver_hub_client_secret,
-            search_policy=ProviderPolicy("naver_hub_search", settings.hub_search_monthly_limit),
+            search_policy=ProviderPolicy(
+                "naver_hub_search",
+                settings.hub_search_monthly_limit,
+                daily_limit=settings.hub_search_daily_limit,
+                requests_per_second=settings.hub_search_rps,
+            ),
         )
         hub_trend = NaverHubTrendClient(
             gateway,
             settings.naver_hub_client_id,
             settings.naver_hub_client_secret,
-            trend_policy=ProviderPolicy("naver_hub_trend", settings.hub_trend_monthly_limit),
+            trend_policy=ProviderPolicy(
+                "naver_hub_trend",
+                settings.hub_trend_monthly_limit,
+                daily_limit=settings.hub_trend_daily_limit,
+                requests_per_second=settings.hub_trend_rps,
+            ),
         )
     if settings.searchad_configured:
         searchad = NaverSearchAdClient(
@@ -61,7 +72,13 @@ def get_analyze_service() -> AnalyzeService:
             settings.naver_searchad_api_key,
             settings.naver_searchad_secret_key,
             settings.naver_searchad_customer_id,
-            policy=ProviderPolicy("searchad", settings.searchad_monthly_limit, max_concurrency=1),
+            policy=ProviderPolicy(
+                "searchad",
+                settings.searchad_monthly_limit,
+                daily_limit=settings.searchad_daily_limit,
+                requests_per_second=settings.searchad_rps,
+                max_concurrency=1,
+            ),
         )
 
     return AnalyzeService(get_session_factory(), searchad, hub_search, hub_trend)
@@ -83,6 +100,11 @@ def get_draft_service(use_llm: bool = False) -> DraftService:
     return DraftService(get_session_factory(), llm)
 
 
+@lru_cache
+def get_publish_service() -> PublishService:
+    return PublishService(get_session_factory())
+
+
 def reset_caches() -> None:
     """Test helper: drop every cached singleton (settings included)."""
     get_settings.cache_clear()
@@ -90,3 +112,4 @@ def reset_caches() -> None:
     get_gateway.cache_clear()
     get_analyze_service.cache_clear()
     get_draft_service.cache_clear()
+    get_publish_service.cache_clear()

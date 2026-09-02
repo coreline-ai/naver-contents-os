@@ -1,6 +1,6 @@
 # HANDOFF — 네이버 콘텐츠 운영 OS
 
-작성일: `2026-09-02` · 기준: `main` 안정화 시작 커밋 `0ef613b` 이후 반영분 · 테스트: pytest 117 + vitest 13 전부 통과
+작성일: `2026-09-02` · 기준: P0/P1 잔여 구현 작업 트리 · 테스트: pytest 136 + vitest 23 전부 통과
 
 이 문서 하나로 다른 개발자/에이전트가 이어서 작업할 수 있도록 프로젝트 전체 상태를 정리한다.
 
@@ -9,18 +9,18 @@
 키워드 하나를 입력하면 **검색량·트렌드·경쟁 규모 수집 → Opportunity Score → 15편 콘텐츠 플랜 → LLM 초안 → SmartEditor 임시저장**까지 이어지는 로컬 우선 파이프라인. 자동 공개 발행은 하지 않는다 — **최종 발행은 항상 사람이 결정** (프로젝트 전체의 제1원칙).
 
 - 설계 문서: [docs/INDEX.md](docs/INDEX.md) (01~13, 특히 [13 착수 체크리스트](docs/13_development_kickoff_checklist.md))
-- 개발 이력: [dev-plan/implement_20260901_205331.md](dev-plan/implement_20260901_205331.md) (V1, Phase 1~6 완료) · [dev-plan/implement_20260901_222443.md](dev-plan/implement_20260901_222443.md) (V2 LLM, 완료) · [dev-plan/implement_20260902_095019.md](dev-plan/implement_20260902_095019.md) (현재 기능 안정화, Phase 1~5 완료) · [dev-plan/implement_20260902_102516.md](dev-plan/implement_20260902_102516.md) (실브라우저 안전 검증, Phase 1~2 완료·Chrome 제어 연결 대기)
+- 개발 이력: [dev-plan/implement_20260901_205331.md](dev-plan/implement_20260901_205331.md) (V1, Phase 1~6 완료) · [dev-plan/implement_20260901_222443.md](dev-plan/implement_20260901_222443.md) (V2 LLM, 완료) · [dev-plan/implement_20260902_095019.md](dev-plan/implement_20260902_095019.md) (기능 안정화, Phase 1~5 완료) · [dev-plan/implement_20260902_112824.md](dev-plan/implement_20260902_112824.md) (P0/P1 잔여 구현, Phase 1~4 완료·최종 회귀 진행) · [dev-plan/implement_20260902_102516.md](dev-plan/implement_20260902_102516.md) (실브라우저 안전 검증, Phase 1~2 완료·Phase 3~5 대기)
 
 ## 2. 저장소 구조
 
 ```
-apps/local-core/app/    FastAPI Local Core (127.0.0.1:3719) — 인증·분석·초안 API, alembic 자동 적용
-apps/extension/         WXT + React 19 사이드패널 확장 (SERP/Blog 파서 content script 포함)
+apps/local-core/app/    FastAPI Local Core (127.0.0.1:3719) — 인증·분석·초안·Publisher Job API, alembic 자동 적용
+apps/extension/         WXT + React 19 사이드패널 확장 (분석 근거·Draft 편집·Publisher 상태, SERP/Blog parser)
 packages/contracts/     확장↔코어 공유 TypeScript 타입
-python/providers/       외부 데이터: naver_hub(검색 5채널+트렌드), searchad(검색량), llm(Ollama/OpenAI호환), gateway(캐시·429·quota)
-python/intelligence/    Opportunity Score v1, 질문 추출, bigram 클러스터
+python/providers/       외부 데이터 + gateway(캐시·일/월 원자 quota·RPS·Retry-After)
+python/intelligence/    Opportunity Score v1(coverage/confidence), 질문 추출, bigram 클러스터
 python/planner/         15편 플래너, BlogType 8종 템플릿(HOWTO/POLICY/REVIEW 생성 활성)
-python/publisher/       SmartEditor 자동화: selectors(중앙 관리), health(6게이트), editor, jobs(상태기계), browser(CDP)
+python/publisher/       SmartEditor 임시저장 전용: health, 완료 알림+저장 상태 변화, 실패 evidence, Job 상태기계, CDP
 scripts/                verify_api_hub.py, verify_searchad.py, run_publish.py (E2E 러너)
 tests/                  unit / integration / smoke(-m smoke, 실호출) / fixtures
 docs/dev-lessons/       재사용 교훈 2건 (아래 §6)
@@ -51,6 +51,8 @@ uv run python scripts/run_publish.py --keyword "애드포스트 승인" --blog-i
 
 - API 인증: 모든 `/v1/*`는 `X-Local-Token` 헤더 필요. 토큰은 `.env`의 `LOCAL_CORE_TOKEN` 또는 자동 생성된 `data/local_core_token.txt`. 확장 사이드패널 설정에 붙여넣는다.
 - CORS는 `chrome-extension://` Origin만 허용.
+- 사이드패널 흐름: 분석 → 연관어/Trend/cluster/검색 근거 확인 → plan 초안 생성 → 편집 후 새 버전 저장 → blog ID/tags 입력 → 사용자 확인 → 최신 버전 임시저장 Job → 상태 polling.
+- Publisher API: `POST /v1/drafts/{draft_id}/publish-jobs`, `GET /v1/publish-jobs/{job_id}`. 새 분석·새 Draft를 만들지 않고 지정 Draft 최신 버전만 사용한다.
 
 ## 4. 환경변수 (.env — 커밋 금지, 계약은 [.env.example](.env.example))
 
@@ -60,6 +62,8 @@ uv run python scripts/run_publish.py --keyword "애드포스트 승인" --blog-i
 | SearchAd | `NAVER_SEARCHAD_API_KEY/SECRET_KEY/CUSTOMER_ID` | 설정됨, 실호출 검증됨 |
 | LLM | `LLM_PROVIDER=local\|openai_compat` + `OLLAMA_*` / `OPENAI_COMPAT_*` / `CODEX_PROXY_*` | 기본 local. §5 참조 |
 | Core | `LOCAL_CORE_HOST/PORT/TOKEN` | 기본 127.0.0.1:3719 |
+| Publisher | `PUBLISHER_CDP_URL` | 기본 `http://127.0.0.1:9222` |
+| 자체 한도 | `HUB_*_DAILY_LIMIT`, `HUB_*_RPS`, `SEARCHAD_*_DAILY_LIMIT/RPS` | `.env.example` 기본값 참조 |
 
 금지: `NAVER_ID/PASSWORD` (브라우저 세션만 사용). 보안 규칙 10개: [docs/11](docs/11_local_environment_and_security.md).
 
@@ -80,22 +84,22 @@ uv run python scripts/run_publish.py --keyword "애드포스트 승인" --blog-i
 1. **HUB 검색 API는 JSON을 `Content-Type: text/plain`으로 반환** — content-type을 절대 신뢰하지 말고 본문 파싱. (DL-…42b6f755, 회귀 테스트 있음)
 2. **SearchAd keywordstool은 공백 포함 키워드를 4xx로 거부** — 클라이언트가 공백 제거 후 전송. (DL-…c0f87a11)
 
-기타: SearchAd 검색량 `"< 10"`은 0이 아닌 masked/missing으로 처리. Trend `ratio`는 상대값(절대 검색량 아님). API 한도는 하드코딩 금지 — Gateway가 자체 월한도(설정값)로 차단·80% 경고. 새 계획 작성 시 `docs/dev-lessons/`의 활성 교훈을 먼저 확인한다.
+기타: SearchAd 검색량 `"< 10"`은 0이 아닌 masked/missing으로 처리. Trend `ratio`는 상대값(절대 검색량 아님). Gateway는 cache hit를 제외하고 실제 전송 시도마다 일·월 사용량을 원자적으로 예약하며 429 재시도·4xx·transport 실패도 사용량에 포함한다. 새 계획 작성 시 `docs/dev-lessons/`의 활성 교훈을 먼저 확인한다.
 
 ## 7. 남은 작업 (사람 손 필요)
 
 | 우선 | 항목 | 방법 |
 |---|---|---|
 | 1 | 확장 실브라우저 육안 확인 | `pnpm build:ext` → 확장 로드 → 토큰 입력 → 네이버 검색 페이지에서 "현재 검색어 가져오기"·분석 표시 확인 |
-| 2 | SmartEditor 임시저장 실검증 | `./scripts/start_chrome_automation.sh`로 전용 profile Chrome 실행·로그인 후 `run_publish.py`. **selector는 실DOM 미검증 추정값** — health check가 실패 항목을 알려주면 [python/publisher/selectors.py](python/publisher/selectors.py) 보정 (게이트가 있어 오입력 위험 없음) |
+| 2 | SmartEditor 임시저장 실검증 | 전용 profile Chrome에서 UI 또는 CLI 실행. **selector와 저장 신호는 실DOM 미검증 추정값** — 실패 Job의 `data/publisher-artifacts/` 입력영역 마스킹 screenshot·sanitized DOM과 health 항목으로 [python/publisher/selectors.py](python/publisher/selectors.py) 보정 |
 | 3 | API HUB 콘솔 한도·알림 | `Application → 한도 및 알림`에서 일·월 한도 + 통보 대상자 등록 |
 | 4 | (선택) Ollama 모델 설치 | 로컬 LLM 초안용 `ollama pull <model>` |
 
-후속 확장 후보(이번 안정화 범위 밖): 스트리밍 표시, 본문 길이 미달 이어쓰기, Opportunity Score confidence, Whale 실호환 검증.
+후속 확장 후보(이번 안정화 범위 밖): 스트리밍 표시, 본문 길이 미달 이어쓰기, FactPack, Whale 실호환 검증.
 
 ## 8. 협업 시 주의
 
-- 현재 안정화 작업은 `0ef613b`에서 시작했으며 Provider 오류 강하 회귀, Draft/Publisher 예외 종료, Extension stale 요청 차단, non-live CI를 보강했다. 인계 시 `git status`와 [현재 안정화 계획](dev-plan/implement_20260902_095019.md)을 함께 확인한다.
+- 이번 P0/P1 잔여 구현은 분석 근거 UI, Score 신뢰도, SERP 판정, 일·월/RPS quota, Draft 편집·Publisher API/UI, SmartEditor 2중 저장 신호·실패 evidence를 연결했다. 인계 시 `git status`와 [P0/P1 잔여 구현 계획](dev-plan/implement_20260902_112824.md)을 함께 확인한다.
 - 커밋 규칙: Phase/작업 단위 커밋, `.env`·`data/`는 절대 커밋 금지 (커밋 전 `git ls-files | grep -x .env` 확인 습관).
 - 계획 문서의 체크박스는 실제 진행과 일치시켜야 함 (dev-plan 스킬 규칙).
 - GitHub Actions의 `Verify` workflow는 Secret 없는 non-live 검증만 수행한다. smoke·Ollama·Codex proxy·Chrome·SmartEditor 실동작은 CI에서 실행하지 않는다.

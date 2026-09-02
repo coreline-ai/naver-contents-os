@@ -7,6 +7,7 @@ import type {
   DraftCreateResponse,
   DraftDetail,
   HealthResponse,
+  PublishJob,
   SerpObservation,
 } from '@ncos/contracts';
 
@@ -87,5 +88,19 @@ export class CoreClient {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+
+  startPublishJob(
+    draftId: number,
+    input: { blog_id: string; tags: string[] },
+  ): Promise<PublishJob> {
+    return this.request<PublishJob>(`/v1/drafts/${draftId}/publish-jobs`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  getPublishJob(jobId: number): Promise<PublishJob> {
+    return this.request<PublishJob>(`/v1/publish-jobs/${jobId}`);
   }
 }

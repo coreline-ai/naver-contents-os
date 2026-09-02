@@ -16,6 +16,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable, Protocol
 
 import httpx
@@ -32,7 +33,7 @@ class CacheStore(Protocol):
 
 
 class UsageStore(Protocol):
-    def increment(self, provider: str, period: str) -> int: ...
+    def reserve(self, provider: str, limits: dict[str, int]) -> dict[str, int] | None: ...
     def current(self, provider: str, period: str) -> int: ...
 
 
@@ -63,6 +64,8 @@ class _LockEntry:
 class ProviderPolicy:
     name: str
     monthly_limit: int
+    daily_limit: int | None = None
+    requests_per_second: float = 0.0
     max_concurrency: int = 4
     max_retries_429: int = 3
     backoff_base_seconds: float = 0.5
@@ -75,6 +78,20 @@ def cache_key(provider: str, method: str, url: str, params: dict | None, body: d
         ensure_ascii=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def retry_after_seconds(value: str, now: datetime | None = None) -> float | None:
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        return max(0.0, (retry_at - current).total_seconds())
 
 
 @dataclass
@@ -91,8 +108,10 @@ class Gateway:
     warn_ratio: float = 0.8
     sleeper: Callable[[float], None] = time.sleep
     rng: Callable[[], float] = random.random
+    clock: Callable[[], float] = time.monotonic
     _locks: dict[str, _LockEntry] = field(default_factory=dict)
     _semaphores: dict[str, threading.Semaphore] = field(default_factory=dict)
+    _next_request_at: dict[str, float] = field(default_factory=dict)
     _guard: threading.Lock = field(default_factory=threading.Lock)
 
     def _acquire_dedup(self, key: str) -> _LockEntry:
@@ -115,6 +134,60 @@ class Gateway:
                 self._semaphores[policy.name] = threading.Semaphore(policy.max_concurrency)
             return self._semaphores[policy.name]
 
+    def _reserve_attempt(self, policy: ProviderPolicy) -> None:
+        now = datetime.now(timezone.utc)
+        monthly_period = now.strftime("%Y%m")
+        limits = {monthly_period: policy.monthly_limit}
+        daily_period = now.strftime("%Y%m%d")
+        if policy.daily_limit is not None:
+            limits[daily_period] = policy.daily_limit
+
+        reserved = self.usage.reserve(policy.name, limits)
+        if reserved is None:
+            scope = "monthly"
+            used = self.usage.current(policy.name, monthly_period)
+            limit = policy.monthly_limit
+            if policy.daily_limit is not None:
+                daily_used = self.usage.current(policy.name, daily_period)
+                if daily_used >= policy.daily_limit:
+                    scope, used, limit = "daily", daily_used, policy.daily_limit
+            raise self.quota_error(
+                f"self-imposed {scope} limit reached ({used}/{limit})",
+                provider=policy.name,
+            )
+
+        monthly_used = reserved[monthly_period]
+        if monthly_used >= policy.monthly_limit * self.warn_ratio:
+            log.warning(
+                "usage_near_limit",
+                provider=policy.name,
+                period="monthly",
+                used=monthly_used,
+                limit=policy.monthly_limit,
+            )
+        if policy.daily_limit is not None:
+            daily_used = reserved[daily_period]
+            if daily_used >= policy.daily_limit * self.warn_ratio:
+                log.warning(
+                    "usage_near_limit",
+                    provider=policy.name,
+                    period="daily",
+                    used=daily_used,
+                    limit=policy.daily_limit,
+                )
+
+    def _pace(self, policy: ProviderPolicy) -> None:
+        if policy.requests_per_second <= 0:
+            return
+        interval = 1.0 / policy.requests_per_second
+        with self._guard:
+            now = self.clock()
+            next_at = self._next_request_at.get(policy.name, now)
+            delay = max(0.0, next_at - now)
+            self._next_request_at[policy.name] = max(now, next_at) + interval
+        if delay > 0:
+            self.sleeper(delay)
+
     def request(
         self,
         *,
@@ -132,18 +205,7 @@ class Gateway:
                 if cached is not None:
                     return GatewayResult(cached.body, True, cached.collected_at)
 
-            period = datetime.now(timezone.utc).strftime("%Y%m")
-            used = self.usage.current(policy.name, period)
-            if used >= policy.monthly_limit:
-                raise self.quota_error(
-                    f"self-imposed monthly limit reached ({used}/{policy.monthly_limit})",
-                    provider=policy.name,
-                )
-            if used >= policy.monthly_limit * self.warn_ratio:
-                log.warning("usage_near_limit", provider=policy.name, used=used, limit=policy.monthly_limit)
-
             response = self._send_with_backoff(policy, send)
-            self.usage.increment(policy.name, period)
             body = response.text
             collected_at = datetime.now(timezone.utc)
             self.cache.put(key, policy.name, body, ttl_seconds, collected_at)
@@ -156,6 +218,10 @@ class Gateway:
         attempt = 0
         while True:
             with semaphore:
+                self._pace(policy)
+                # Reserve immediately before each send, including failures and 429 retries.
+                # Cache hits never reach this point and therefore consume no quota.
+                self._reserve_attempt(policy)
                 try:
                     response = send()
                 except httpx.RequestError as exc:
@@ -175,6 +241,11 @@ class Gateway:
                         f"still rate limited after {attempt} retries", provider=policy.name
                     )
                 delay = policy.backoff_base_seconds * (2**attempt) + self.rng() * 0.3
+                retry_after = response.headers.get("Retry-After")
+                if retry_after is not None:
+                    header_delay = retry_after_seconds(retry_after)
+                    if header_delay is not None:
+                        delay = max(delay, header_delay)
                 log.info("backoff_429", provider=policy.name, attempt=attempt, delay=round(delay, 2))
                 self.sleeper(delay)
                 attempt += 1

@@ -25,9 +25,12 @@ class FakeUsage:
     def __init__(self):
         self.counts: dict[tuple[str, str], int] = {}
 
-    def increment(self, provider: str, period: str) -> int:
-        self.counts[(provider, period)] = self.counts.get((provider, period), 0) + 1
-        return self.counts[(provider, period)]
+    def reserve(self, provider: str, limits: dict[str, int]) -> dict[str, int] | None:
+        if any(self.counts.get((provider, period), 0) >= limit for period, limit in limits.items()):
+            return None
+        for period in limits:
+            self.counts[(provider, period)] = self.counts.get((provider, period), 0) + 1
+        return {period: self.counts[(provider, period)] for period in limits}
 
     def current(self, provider: str, period: str) -> int:
         return self.counts.get((provider, period), 0)

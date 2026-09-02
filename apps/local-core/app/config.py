@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import secrets
 import os
+import secrets
 from functools import lru_cache
 from pathlib import Path
 
@@ -44,12 +44,19 @@ class Settings(BaseSettings):
     local_core_host: str = "127.0.0.1"
     local_core_port: int = 3719
     local_core_token: str = ""
+    publisher_cdp_url: str = "http://127.0.0.1:9222"
 
     # Self-imposed monthly call limits, deliberately below official quotas (docs/10).
     # Official quotas change; treat the console as the source of truth.
     hub_search_monthly_limit: int = 50_000
+    hub_search_daily_limit: int = 10_000
+    hub_search_rps: float = 25.0
     hub_trend_monthly_limit: int = 5_000
+    hub_trend_daily_limit: int = 2_000
+    hub_trend_rps: float = 10.0
     searchad_monthly_limit: int = 10_000
+    searchad_daily_limit: int = 2_000
+    searchad_rps: float = 1.0
     usage_warn_ratio: float = 0.8
 
     db_path: Path = DATA_DIR / "ncos.db"

@@ -40,17 +40,39 @@ class PublishJobRunner:
         title: str,
         body: str,
         tags: list[str],
+        job_id: int | None = None,
     ) -> dict:
-        job_id = self._store.create(draft_id)
+        job_id = job_id or self._store.create(draft_id)
 
-        def record(stage: str, status: str, error_code: str | None = None, detail: str = "") -> None:
+        def capture_failure(stage: str) -> dict:
+            try:
+                return page.capture_evidence(f"job-{job_id}-{stage}")
+            except Exception as exc:  # noqa: BLE001 - evidence failure must not hide the root failure
+                return {"capture_error": type(exc).__name__}
+
+        def record(
+            stage: str,
+            status: str,
+            error_code: str | None = None,
+            detail: str = "",
+            evidence: dict | None = None,
+        ) -> None:
+            history_entry = {
+                "stage": stage,
+                "status": status,
+                "at": _now(),
+                "error_code": error_code,
+                "detail": detail,
+            }
+            if evidence:
+                history_entry["evidence"] = evidence
             self._store.update(
                 job_id,
                 status=status,
                 stage=stage,
                 error_code=error_code,
                 detail=detail,
-                history_entry={"stage": stage, "status": status, "at": _now(), "error_code": error_code, "detail": detail},
+                history_entry=history_entry,
             )
 
         # gate: no input starts unless every health check passes (docs/05)
@@ -59,7 +81,13 @@ class PublishJobRunner:
             report: HealthReport = self._run_health(page, blog_id)
         except Exception as exc:  # noqa: BLE001 - browser failures must close the job cleanly
             detail = f"health check raised {type(exc).__name__}: {exc}"
-            record("health_check", "failed", "health_check_error", detail)
+            record(
+                "health_check",
+                "failed",
+                "health_check_error",
+                detail,
+                capture_failure("health_check"),
+            )
             return {
                 "job_id": job_id,
                 "status": "failed",
@@ -68,7 +96,13 @@ class PublishJobRunner:
             }
         if not report.all_ok:
             detail = ", ".join(report.failed)
-            record("health_check", "failed", "health_check_failed", detail)
+            record(
+                "health_check",
+                "failed",
+                "health_check_failed",
+                detail,
+                capture_failure("health_check"),
+            )
             return {"job_id": job_id, "status": "failed", "stage": "health_check", "failed_checks": report.failed}
         record("health_check", "passed")
 
@@ -86,7 +120,7 @@ class PublishJobRunner:
                 step()
             except Exception as exc:  # noqa: BLE001 - normalize Playwright errors in job history
                 code = exc.stage if isinstance(exc, EditorError) else "editor_error"
-                record(stage, "failed", code, str(exc))
+                record(stage, "failed", code, str(exc), capture_failure(stage))
                 return {"job_id": job_id, "status": "failed", "stage": stage, "error": str(exc)}
             record(stage, "passed")
 

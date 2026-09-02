@@ -17,15 +17,15 @@
 | 영역 | 상태 | 근거 |
 |---|---|---|
 | API HUB/SearchAd | 검증 완료 | Blog·Trend·keywordstool live smoke 3개 통과 |
-| Provider/Gateway | 구현 완료 | cache provenance, backoff, quota, 오류 표준화 |
+| Provider/Gateway | 구현 완료 | cache provenance, 일·월 원자 quota, RPS, Retry-After, 오류 표준화 |
 | 데이터 정합성 | 구현 완료 | NFKC/공백, SERP query 일치, exact metric 검증 |
-| DB | 구현 완료 | Alembic 3개 revision, snapshot/draft/job/lineage |
-| Opportunity Score | 실험용 V1 | 설명 가능, coverage/confidence 고도화 필요 |
+| DB | 구현 완료 | Alembic 4개 revision, snapshot/draft/job/일·월 usage/lineage |
+| Opportunity Score | 실험용 V1 | 설명 가능, coverage·구성요소 수·confidence 표시 |
 | 15편 Planner | 구현 완료 | generation status로 LLM 지원 여부 분리 |
-| Extension | 구현 완료 | stale 요청 차단, typecheck·13 tests·production build 통과 |
-| Draft API | 구현 완료 | create/get/add-version, skeleton/Ollama mode |
+| Extension | 구현 완료 | 분석 근거·Draft 편집·Publisher 상태, stale 차단, typecheck·22 tests |
+| Draft API | 구현 완료 | create/get/add-version/publish-job, skeleton/Ollama mode |
 | Blog Inspector | 구현 완료 | 파서와 사이드패널 표시 연결 |
-| SmartEditor | 검증 대기 | health/save signal 단위 테스트, live E2E 미수행 |
+| SmartEditor | 검증 대기 | health·완료 알림+저장 상태 변화·failure evidence 구현, live E2E 미수행 |
 | 이미지 자동화 | 후속 범위 | 현재 텍스트·태그 V1에서 제외 |
 | 운영 배포 | 부분 준비 | README·검증 script·non-live CI 제공, 패키징은 후속 |
 
@@ -37,12 +37,14 @@
 4. Secret은 Local Core에만 두고 Extension에는 pairing token만 저장한다.
 5. 초안 원본과 수정 version을 덮어쓰지 않고 보존한다.
 6. 미지원 BlogType은 LLM 호출 전에 차단한다.
-7. SmartEditor는 모든 Health gate와 저장 성공 신호가 확인돼야 성공 처리한다.
+7. SmartEditor는 모든 Health gate, 저장 완료 알림, 기존 값과 다른 저장 상태가 확인돼야 성공 처리한다.
+8. 미지 SERP DOM과 확인된 빈 결과를 구분하고 API HUB와 Browser SERP 근거를 분리 표시한다.
+9. Publisher는 사용자 확인 후 지정 Draft 최신 버전만 사용하며 공개 발행 action이 없다.
 
 ## 남은 핵심 위험
 
 - SmartEditor selector와 저장 성공 문구는 실제 계정 DOM에서 최종 확인해야 한다.
-- Opportunity Score v1은 항상 결측인 구성요소가 있어 keyword 간 비교 confidence가 필요하다.
+- Opportunity Score v1은 항상 결측인 구성요소가 있어 최대 coverage가 제한되며 confidence를 함께 해석해야 한다.
 - Ollama model이 설치되지 않아 현재 AI 초안은 실행 전 model 설치가 필요하다.
 - API HUB 콘솔의 일·월 한도와 알림 대상 설정은 사용자 콘솔 작업으로 남아 있다.
 - 이미지 upload/focus recovery는 아직 구현하지 않았다.
@@ -51,13 +53,13 @@
 ## 최신 검증
 
 ```text
-Python unit/integration 117 passed (4 live smoke deselected)
-Extension test           13 passed
+Python unit/integration 136 passed (4 live smoke deselected)
+Extension test           23 passed
 TypeScript typecheck      PASS
 WXT production build      PASS
-Clean DB migration        f2c91d8a7b42 (head)
+Clean DB migration        8b9f2c1d4e7a (head)
 Tracked secret/runtime    PASS
-총 non-live 자동 검증    130 passed
+총 non-live 자동 검증    159 passed
 ```
 
 NAVER live smoke와 OpenAI 호환 LLM smoke는 자격증명·쿼터·외부 전송이 필요한 별도 검증이며, 이번 안정화에서는 재실행하지 않았다. 기존 실호출 기록은 [구현 전문가 상세 분석](./14_implementation_expert_review.md)의 이력으로 유지한다.

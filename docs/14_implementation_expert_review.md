@@ -6,6 +6,35 @@
 
 ## 후속 안정화 구현 상태
 
+### 2026-09-02 P0/P1 잔여 구현
+
+`dev-plan/implement_20260902_112824.md`에 따라 실계정·실브라우저 검증을 제외하고 제품 흐름과 안전 실패 계약을 다음과 같이 연결했다.
+
+- 사이드패널에 seed/연관 키워드의 PC·모바일·합계·모바일 비중·광고 경쟁·마스킹, 상대 Trend, cluster, API HUB/Browser SERP 근거를 표시하고 연관/cluster 키워드 재분석을 연결했다.
+- Opportunity Score 응답과 공유 계약에 `coverage_weight`, 사용 가능/전체 component 수, `confidence`를 추가하고 UI에 표시했다.
+- SERP parser가 미지 DOM을 실패로, 확인된 empty state를 정상 0건으로 반환하고 혼합 layout은 중복 제거 후 모두 수집한다.
+- Gateway가 cache hit를 제외한 실제 전송 시도 직전에 일·월 한도를 원자적으로 예약하며 provider별 RPS와 숫자/HTTP-date `Retry-After`를 적용한다. 4xx·429 재시도·transport 실패 시도도 사용량에 포함된다.
+- Draft 조회·편집·버전 append UI와 `POST /v1/drafts/{id}/publish-jobs`, `GET /v1/publish-jobs/{id}`를 추가했다. Publisher는 새 분석/초안을 만들지 않고 지정 Draft 최신 버전만 사용한다.
+- SmartEditor 저장 성공은 완료 알림과 저장 전 fingerprint에서 달라진 지속 상태 DOM을 모두 요구한다. Health/입력/저장 실패 시 입력영역·프로필을 마스킹한 screenshot과 텍스트·입력값을 제외한 구조 DOM을 `data/publisher-artifacts/`에 남기고 Job history에는 경로만 기록한다.
+- 공개 발행 action은 추가하지 않았고 Publisher 시작 전에 사이드패널 확인 대화상자를 요구한다.
+
+현재 자동 검증은 Python non-live 136개와 Extension 23개로 **159개 통과**했다. TypeScript typecheck, production build, compileall, clean DB Alembic `8b9f2c1d4e7a (head)`, tracked Secret/runtime 검사도 통과했다.
+
+최초 P0/P1 판정과의 대응은 다음과 같다.
+
+| 최초 항목 | 현재 상태 |
+|---|---|
+| P0-1 제품 흐름 미연결 | 분석 → plan → Draft 생성/편집/version → Publisher Job까지 HTTP/UI 연결 완료 |
+| P0-2 미지원 BlogType 기본 선택 | 기존 안정화에서 generation status와 첫 활성 유형 선택으로 해결 |
+| P0-3 저장 성공 미확인 | 독립 신호 2개와 실패 evidence로 해결, 실DOM 검증만 대기 |
+| P0-4 Chrome 136+ CDP | 기존 전용 automation profile script로 해결, 사용자 로그인 검증 대기 |
+| P1-1~5, 7~8 | 기존 안정화에서 type/cache/metric/validation/error/security/health 계약 해결 |
+| P1-6 quota 모델 | 일·월 원자 예약, 실제 시도 계수, RPS, Retry-After로 해결 |
+| P1-9 이미지 입력 | 텍스트·태그 V1 제외 범위로 명시, Health 필수 gate에 포함하지 않음 |
+| P1-10 FactPack | 별도 생성 품질 확장 범위로 유지 |
+
+현재 남은 차단 항목은 코드 미연결이 아니라 사용자의 네이버 세션과 명시적 승인이 필요한 **Extension 및 SmartEditor 실브라우저 인수 검증**이다. 아래 최초 분석 본문은 발견 당시 이력이며 현재 판정에는 이 절과 [09. 현재 구현 품질 평가](./09_quality_assessment.md)를 우선한다.
+
 ### 2026-09-02 현재 기능 안정화
 
 `dev-plan/implement_20260902_095019.md`의 Phase 1~5에서 신규 기능을 추가하지 않고 다음 회귀를 보강했다.

@@ -98,6 +98,8 @@ signature = Base64(HMAC_SHA256(secret_utf8, message_utf8))
 6. 월·일 사용량을 Local DB에도 누적해 콘솔 한도 전에 경고.
 7. UI에서 강제 새로고침은 별도 액션으로 제공.
 
+구현 계약상 cache hit는 사용량을 늘리지 않는다. 외부 전송은 일·월 한도를 원자적으로 예약한 뒤에만 수행하며 200 외의 4xx, 429 재시도, transport 실패도 시도 횟수로 집계한다. `Retry-After`는 초 단위와 HTTP-date 형식을 지원하고 provider별 RPS pacing과 동시성 제한을 함께 적용한다.
+
 ## API 스모크 테스트
 
 실제 인증값을 사용하는 테스트는 기본 단위 테스트와 분리해 `smoke` marker로 실행합니다.

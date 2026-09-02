@@ -52,7 +52,14 @@ SMARTEDITOR_SELECTORS: dict[str, list[str]] = {
         "text=임시저장되었습니다",
         "text=저장되었습니다",
         "[class*='save_complete']",
+    ],
+    # A persistent save-state/timestamp is intentionally separate from the
+    # transient confirmation above. Both must be observed before a job closes.
+    "draft_save_state": [
         "[class*='saveStatus']",
+        ".save_area [class*='time']",
+        "button[data-click-area='tpb.save'] time",
+        "[class*='saved_at']",
     ],
 }
 

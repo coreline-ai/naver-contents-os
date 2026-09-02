@@ -1,8 +1,8 @@
 /** Naver SERP parser (content-script side).
  *
  * The SERP is not an API contract: selectors are candidate lists, every field is
- * optional, and a parse failure returns { ok: false } instead of throwing so the
- * extension never crashes on a DOM change (docs/12).
+ * optional, and an unknown layout returns { ok: false } instead of pretending to
+ * be a valid zero-result page (docs/12).
  */
 
 export interface ParsedSerpResult {
@@ -38,6 +38,7 @@ export const SERP_SELECTORS = {
   author: ['.fds-info-inner-text', '.user_info > a.name', '.sub_txt.sub_name', '.user_box .name'],
   postedAt: ['.fds-info-sub-inner-text', '.user_info span.sub', 'span.sub_time', '.date'],
   adBadge: ['.link_ad', '.spview .ad_label', '.fds-ad-badge', '.ad_area'],
+  emptyState: ['.api_no_result_wrap', '.not_found02', '[class*="no_result"]'],
 } as const;
 
 function pick(root: Element | Document, candidates: readonly string[]): Element | null {
@@ -73,9 +74,10 @@ export function parseSerp(doc: Document, locationHref: string, limit = 20): Serp
   try {
     const query = parseQuery(doc, locationHref);
     const results: ParsedSerpResult[] = [];
+    const seen = new Set<string>();
 
-    // One page renders one layout: the first item selector that yields results wins,
-    // otherwise nested containers (li.bx > .total_wrap) would parse twice.
+    // Naver can mix old/new blocks on one page. Inspect every candidate group and
+    // deduplicate nested containers by URL/title instead of stopping at the first.
     for (const itemSelector of SERP_SELECTORS.item) {
       for (const element of Array.from(doc.querySelectorAll(itemSelector))) {
         if (results.length >= limit) break;
@@ -85,6 +87,9 @@ export function parseSerp(doc: Document, locationHref: string, limit = 20): Serp
         if (!title) continue; // not a UGC result block
 
         const url = link?.getAttribute('href') ?? '';
+        const dedupeKey = `${url}\n${title}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         results.push({
           rank: results.length + 1,
           result_type: url.includes('blog.naver.com')
@@ -100,7 +105,10 @@ export function parseSerp(doc: Document, locationHref: string, limit = 20): Serp
           is_ad: pick(element, SERP_SELECTORS.adBadge) !== null,
         });
       }
-      if (results.length > 0) break;
+    }
+    if (results.length === 0) {
+      if (pick(doc, SERP_SELECTORS.emptyState)) return { ok: true, query, results: [] };
+      return { ok: false, error: 'unsupported_serp_dom', query, results: [] };
     }
     return { ok: true, query, results };
   } catch (error) {

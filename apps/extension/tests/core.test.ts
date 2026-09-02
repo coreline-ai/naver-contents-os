@@ -64,4 +64,39 @@ describe('CoreClient draft contract', () => {
       message: 'Value error, invalid plan',
     });
   });
+
+  it('starts and reads publish jobs without putting content in the request', async () => {
+    const job = {
+      job_id: 9,
+      draft_id: 3,
+      status: 'pending',
+      stage: '',
+      error_code: null,
+      detail: '',
+      history: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new CoreClient('http://127.0.0.1:3719', 'token');
+
+    await expect(
+      client.startPublishJob(3, { blog_id: 'target_blog', tags: ['태그'] }),
+    ).resolves.toEqual(job);
+    await expect(client.getPublishJob(9)).resolves.toEqual(job);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:3719/v1/drafts/3/publish-jobs',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ blog_id: 'target_blog', tags: ['태그'] }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:3719/v1/publish-jobs/9',
+      expect.not.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock.mock.calls[0][1]?.body).not.toContain('본문');
+  });
 });

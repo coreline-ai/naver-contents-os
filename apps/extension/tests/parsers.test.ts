@@ -41,12 +41,35 @@ describe('parseSerp', () => {
     expect(parsed.results[0].blog_id).toBe('legacy1');
   });
 
-  it('degrades to url query and empty results on unknown DOM, never throws', () => {
+  it('marks an unknown DOM as a parse failure while preserving the URL query', () => {
     const doc = new DOMParser().parseFromString('<div><p>전혀 다른 구조</p></div>', 'text/html');
     const parsed = parseSerp(doc, SERP_URL);
-    expect(parsed.ok).toBe(true);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toBe('unsupported_serp_dom');
     expect(parsed.query).toBe('테스트'); // from URL param
     expect(parsed.results).toEqual([]);
+  });
+
+  it('distinguishes an explicit empty state from an unknown layout', () => {
+    const doc = new DOMParser().parseFromString(
+      '<div class="api_no_result_wrap">검색 결과가 없습니다</div>',
+      'text/html',
+    );
+    const parsed = parseSerp(doc, SERP_URL);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.results).toEqual([]);
+  });
+
+  it('merges mixed layouts and deduplicates nested result containers', () => {
+    const doc = new DOMParser().parseFromString(
+      `<input id="query" value="혼합 검색" />
+       <li class="bx"><div class="total_wrap"><a class="title_link" href="https://blog.naver.com/a/1">첫 결과</a></div></li>
+       <div class="fds-ugc-block-mod"><a class="fds-comps-right-image-text-title" href="https://cafe.naver.com/b/2">둘째 결과</a></div>`,
+      'text/html',
+    );
+    const parsed = parseSerp(doc, SERP_URL);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.results.map((item) => item.title)).toEqual(['둘째 결과', '첫 결과']);
   });
 
   it('extracts blog ids only from naver blog urls', () => {

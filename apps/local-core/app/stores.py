@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -66,19 +66,41 @@ class SqlUsageStore:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._sessions = session_factory
 
-    def increment(self, provider: str, period: str) -> int:
+    def reserve(self, provider: str, limits: dict[str, int]) -> dict[str, int] | None:
+        """Atomically reserve one call in every period or leave all counts unchanged."""
         with self._sessions() as session:
-            statement = (
-                sqlite_insert(ApiUsage)
-                .values(provider=provider, period=period, count=1)
-                .on_conflict_do_update(
-                    index_elements=[ApiUsage.provider, ApiUsage.period],
-                    set_={"count": ApiUsage.count + 1},
+            for period in limits:
+                session.execute(
+                    sqlite_insert(ApiUsage)
+                    .values(provider=provider, period=period, count=0)
+                    .on_conflict_do_nothing(
+                        index_elements=[ApiUsage.provider, ApiUsage.period]
+                    )
                 )
-            )
-            session.execute(statement)
+
+            for period, limit in limits.items():
+                result = session.execute(
+                    update(ApiUsage)
+                    .where(
+                        ApiUsage.provider == provider,
+                        ApiUsage.period == period,
+                        ApiUsage.count < limit,
+                    )
+                    .values(count=ApiUsage.count + 1)
+                )
+                if result.rowcount != 1:
+                    session.rollback()
+                    return None
+
+            rows = session.scalars(
+                select(ApiUsage).where(
+                    ApiUsage.provider == provider,
+                    ApiUsage.period.in_(limits),
+                )
+            ).all()
+            reserved = {row.period: row.count for row in rows}
             session.commit()
-            return self.current(provider, period)
+            return reserved
 
     def current(self, provider: str, period: str) -> int:
         with self._sessions() as session:

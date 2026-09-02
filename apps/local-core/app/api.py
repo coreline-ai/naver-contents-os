@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app import deps, errors
 from app.auth import require_token
 from app.services.analyze import AnalyzeService
 from app.services.drafts import DraftService
+from app.services.publishing import PublishService
 from intelligence.keyword.models import compact, normalize_keyword
 from planner.templates import is_active
 from planner.types import BlogType
@@ -25,6 +26,10 @@ def get_analyze_service() -> AnalyzeService:
 
 def get_draft_service_factory() -> Callable[[bool], DraftService]:
     return deps.get_draft_service
+
+
+def get_publish_service() -> PublishService:
+    return deps.get_publish_service()
 
 
 @router.get("/handshake")
@@ -135,6 +140,26 @@ class DraftVersionCreatedResponse(BaseModel):
     version: int
 
 
+class PublishJobCreateRequest(BaseModel):
+    blog_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+    tags: list[Annotated[str, Field(max_length=50)]] = Field(default_factory=list, max_length=10)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str]) -> list[str]:
+        return [value.strip() for value in values if value.strip()]
+
+
+class PublishJobResponse(BaseModel):
+    job_id: int
+    draft_id: int
+    status: str
+    stage: str
+    error_code: str | None
+    detail: str
+    history: list[dict]
+
+
 @router.post("/drafts", status_code=201, response_model=DraftCreateResponse)
 def create_draft(
     request: DraftCreateRequest,
@@ -181,3 +206,46 @@ def add_draft_version(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)}) from exc
+
+
+@router.post(
+    "/drafts/{draft_id}/publish-jobs",
+    status_code=202,
+    response_model=PublishJobResponse,
+)
+def start_publish_job(
+    draft_id: int,
+    request: PublishJobCreateRequest,
+    background_tasks: BackgroundTasks,
+    service: PublishService = Depends(get_publish_service),
+) -> dict:
+    task = service.prepare(
+        draft_id,
+        blog_id=request.blog_id,
+        tags=request.tags,
+        cdp_url=deps.get_settings().publisher_cdp_url,
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft not found"})
+    job = service.get_job(task.job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "job_create_failed", "message": "publish job not created"},
+        )
+    background_tasks.add_task(service.run, task)
+    return job
+
+
+@router.get("/publish-jobs/{job_id}", response_model=PublishJobResponse)
+def get_publish_job(
+    job_id: int,
+    service: PublishService = Depends(get_publish_service),
+) -> dict:
+    job = service.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "publish job not found"},
+        )
+    return job

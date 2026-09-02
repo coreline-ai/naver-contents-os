@@ -1,9 +1,12 @@
+from contextlib import contextmanager
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.db import make_engine, make_session_factory
 from app.models_db import Base, Draft, DraftVersion, Keyword, KeywordSnapshot, PublishJob
 from app.services.drafts import DraftService, SqlJobStore, split_generated
+from app.services.publishing import PublishService
 from providers.llm.base import LLMError
 
 
@@ -41,6 +44,25 @@ class RecordingLLM(FakeLLM):
     def generate(self, prompt: str, *, system: str = "") -> str:
         self.calls += 1
         return super().generate(prompt, system=system)
+
+
+class CapturingPublishRunner:
+    def __init__(self, store, captured):
+        self._store = store
+        self._captured = captured
+
+    def run(self, _page, _adapter, **kwargs):
+        self._captured.update(kwargs)
+        job_id = kwargs["job_id"]
+        self._store.update(
+            job_id,
+            status="draft_saved",
+            stage="draft_save",
+            error_code=None,
+            detail="",
+            history_entry={"stage": "draft_save", "status": "draft_saved", "at": "test"},
+        )
+        return {"job_id": job_id, "status": "draft_saved", "stage": "draft_save"}
 
 
 PLAN_ITEM = {
@@ -110,6 +132,105 @@ def test_sql_job_store_persists_history(sessions):
         assert job.status == "failed"
         assert job.error_code == "health_check_failed"
         assert [h["status"] for h in job.history] == ["running", "failed"]
+
+    assert store.get(job_id)["status"] == "failed"
+
+
+def test_publish_service_uses_existing_latest_version_without_creating_content(sessions):
+    drafts = DraftService(sessions, None)
+    created = drafts.create_draft("애드포스트 승인", PLAN_ITEM)
+    drafts.add_version(created["draft_id"], "최신 제목", "최신 본문", note="사실확인")
+    captured = {}
+
+    @contextmanager
+    def fake_page(cdp_url):
+        captured["cdp_url"] = cdp_url
+        yield object()
+
+    service = PublishService(
+        sessions,
+        page_factory=fake_page,
+        adapter_factory=lambda page: page,
+        runner_factory=lambda store: CapturingPublishRunner(store, captured),
+    )
+    task = service.prepare(
+        created["draft_id"],
+        blog_id="target_blog",
+        tags=[" 태그1 ", "", "태그2"],
+        cdp_url="http://127.0.0.1:9222",
+    )
+    assert task is not None
+    assert (task.title, task.body, task.tags) == ("최신 제목", "최신 본문", ["태그1", "태그2"])
+
+    with sessions() as session:
+        before = (session.query(Draft).count(), session.query(DraftVersion).count())
+    service.run(task)
+    with sessions() as session:
+        after = (session.query(Draft).count(), session.query(DraftVersion).count())
+
+    assert before == after == (1, 2)
+    assert captured["draft_id"] == created["draft_id"]
+    assert captured["title"] == "최신 제목"
+    assert captured["body"] == "최신 본문"
+    assert captured["cdp_url"] == "http://127.0.0.1:9222"
+    assert service.get_job(task.job_id)["status"] == "draft_saved"
+
+
+def test_publish_service_records_browser_attach_failure(sessions):
+    created = DraftService(sessions, None).create_draft("애드포스트 승인", PLAN_ITEM)
+
+    @contextmanager
+    def unavailable_page(_cdp_url):
+        raise ConnectionError("CDP unavailable")
+        yield  # pragma: no cover
+
+    service = PublishService(sessions, page_factory=unavailable_page)
+    task = service.prepare(
+        created["draft_id"],
+        blog_id="target_blog",
+        tags=[],
+        cdp_url="http://127.0.0.1:9222",
+    )
+    assert task is not None
+    service.run(task)
+
+    job = service.get_job(task.job_id)
+    assert job["status"] == "failed"
+    assert job["stage"] == "browser_attach"
+    assert job["error_code"] == "browser_unavailable"
+    assert "CDP unavailable" not in job["detail"]
+
+
+def test_publish_service_distinguishes_unhandled_runner_failure(sessions):
+    created = DraftService(sessions, None).create_draft("애드포스트 승인", PLAN_ITEM)
+
+    @contextmanager
+    def fake_page(_cdp_url):
+        yield object()
+
+    class BrokenRunner:
+        def run(self, *_args, **_kwargs):
+            raise RuntimeError("sensitive editor detail")
+
+    service = PublishService(
+        sessions,
+        page_factory=fake_page,
+        adapter_factory=lambda page: page,
+        runner_factory=lambda _store: BrokenRunner(),
+    )
+    task = service.prepare(
+        created["draft_id"],
+        blog_id="target_blog",
+        tags=[],
+        cdp_url="http://127.0.0.1:9222",
+    )
+    assert task is not None
+    service.run(task)
+
+    job = service.get_job(task.job_id)
+    assert job["stage"] == "publisher_runtime"
+    assert job["error_code"] == "publisher_error"
+    assert "sensitive editor detail" not in job["detail"]
 
 
 def test_draft_snapshot_lineage_requires_same_keyword(sessions):
@@ -245,3 +366,70 @@ def test_draft_api_maps_llm_unavailable_to_standard_error(draft_api):
     with sessions() as session:
         assert session.query(Draft).count() == 0
         assert session.query(DraftVersion).count() == 0
+
+
+def test_publish_job_api_starts_existing_draft_and_exposes_status(draft_api):
+    client, token, sessions = draft_api
+    from app import api as api_module
+
+    draft = DraftService(sessions, None).create_draft("애드포스트 승인", PLAN_ITEM)
+    DraftService(sessions, None).add_version(
+        draft["draft_id"], "검수 완료 제목", "검수 완료 본문", note="최종 검수"
+    )
+    captured = {}
+
+    @contextmanager
+    def fake_page(cdp_url):
+        captured["cdp_url"] = cdp_url
+        yield object()
+
+    publisher = PublishService(
+        sessions,
+        page_factory=fake_page,
+        adapter_factory=lambda page: page,
+        runner_factory=lambda store: CapturingPublishRunner(store, captured),
+    )
+    client.app.dependency_overrides[api_module.get_publish_service] = lambda: publisher
+
+    started = client.post(
+        f"/v1/drafts/{draft['draft_id']}/publish-jobs",
+        json={"blog_id": "target_blog", "tags": [" 태그1 ", "태그2"]},
+        headers=_headers(token),
+    )
+    assert started.status_code == 202
+    job_id = started.json()["job_id"]
+    assert started.json()["draft_id"] == draft["draft_id"]
+
+    fetched = client.get(f"/v1/publish-jobs/{job_id}", headers=_headers(token))
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "draft_saved"
+    assert captured["title"] == "검수 완료 제목"
+    assert captured["body"] == "검수 완료 본문"
+    assert captured["tags"] == ["태그1", "태그2"]
+
+
+def test_publish_job_api_validates_target_and_missing_records(draft_api):
+    client, token, _ = draft_api
+    invalid = client.post(
+        "/v1/drafts/999/publish-jobs",
+        json={"blog_id": "잘못된 ID", "tags": []},
+        headers=_headers(token),
+    )
+    assert invalid.status_code == 422
+
+    oversized_tag = client.post(
+        "/v1/drafts/999/publish-jobs",
+        json={"blog_id": "valid_blog", "tags": ["태" * 51]},
+        headers=_headers(token),
+    )
+    assert oversized_tag.status_code == 422
+
+    missing = client.post(
+        "/v1/drafts/999/publish-jobs",
+        json={"blog_id": "valid_blog", "tags": []},
+        headers=_headers(token),
+    )
+    assert missing.status_code == 404
+
+    missing_job = client.get("/v1/publish-jobs/999", headers=_headers(token))
+    assert missing_job.status_code == 404

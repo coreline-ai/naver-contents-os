@@ -89,9 +89,30 @@ class SmartEditorAdapter:
         self._page.press("Escape")
 
     def save_draft(self) -> None:
+        missing_signals: list[str] = []
+
         def click_and_confirm() -> bool:
+            before_state = {
+                selector: self._page.fingerprint(selector)
+                for selector in self._selectors["draft_save_state"]
+                if self._page.exists(selector) and self._page.is_visible(selector)
+            }
             self._page.click(self._require("draft_save_button", "draft_save"))
-            return self._page.wait_for_any(self._selectors["draft_save_success"], 5_000) is not None
+            confirmation = self._page.wait_for_any(
+                self._selectors["draft_save_success"], 5_000
+            )
+            persistent_state = self._page.wait_for_any(
+                self._selectors["draft_save_state"], 5_000
+            )
+            missing_signals.clear()
+            if confirmation is None:
+                missing_signals.append("confirmation")
+            if persistent_state is None or (
+                persistent_state in before_state
+                and self._page.fingerprint(persistent_state) == before_state[persistent_state]
+            ):
+                missing_signals.append("persistent_state_change")
+            return not missing_signals
 
         try:
             if click_and_confirm():
@@ -106,4 +127,7 @@ class SmartEditorAdapter:
                 return
         except Exception as exc:  # noqa: BLE001 - normalize browser errors for job history
             raise EditorError("draft_save", "draft save retry failed") from exc
-        raise EditorError("draft_save", "draft save success signal not observed")
+        missing = ", ".join(missing_signals) or "unknown"
+        raise EditorError(
+            "draft_save", f"independent draft save signals not observed: {missing}"
+        )

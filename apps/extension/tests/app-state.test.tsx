@@ -1,4 +1,4 @@
-import type { AnalyzeResponse, DraftCreateResponse } from '@ncos/contracts';
+import type { AnalyzeResponse, DraftCreateResponse, DraftDetail } from '@ncos/contracts';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -47,10 +47,39 @@ function analysis(keyword: string): AnalyzeResponse {
     landscape: null,
     trend: null,
     serp: null,
-    score: { value: null, score_version: 'v1', contributions: [], missing: ['volume'] },
+    score: {
+      value: null,
+      score_version: 'v1',
+      coverage_weight: 0,
+      available_component_count: 0,
+      total_component_count: 8,
+      confidence: 'unavailable',
+      contributions: [],
+      missing: ['volume'],
+    },
     questions: [],
     clusters: [],
     plan: [planItem],
+  };
+}
+
+function analysisWithSuggestions(keyword: string): AnalyzeResponse {
+  const result = analysis(keyword);
+  return {
+    ...result,
+    related_keywords: [
+      {
+        source: 'SEARCH_AD',
+        collected_at: '2026-09-02T00:00:00Z',
+        keyword: '연관 키워드',
+        monthly_pc_searches: 10,
+        monthly_mobile_searches: 90,
+        volume_masked: false,
+        ad_competition: '중간',
+        ad_click_metrics: {},
+      },
+    ],
+    clusters: [{ label: '클러스터', keywords: ['클러스터 키워드'], total_volume: 100 }],
   };
 }
 
@@ -63,6 +92,25 @@ const draft: DraftCreateResponse = {
   provider: 'skeleton',
   model: '',
   prompt_version: 'v1',
+};
+
+const draftDetail: DraftDetail = {
+  draft_id: draft.draft_id,
+  blog_type: 'HOWTO',
+  title: draft.title,
+  source_snapshot_id: draft.source_snapshot_id,
+  plan: planItem,
+  provider: draft.provider,
+  model: draft.model,
+  prompt_version: draft.prompt_version,
+  versions: [
+    {
+      version: 1,
+      title: draft.title,
+      body: draft.body,
+      note: 'V1 원본',
+    },
+  ],
 };
 
 function response(body: unknown, status = 200): Response {
@@ -138,6 +186,7 @@ describe('sidepanel keyword state', () => {
           return response(analysis(body.keyword));
         }
         if (url.endsWith('/v1/drafts')) return response(draft, 201);
+        if (url.endsWith('/v1/drafts/11')) return response(draftDetail);
         return response({}, 404);
       }),
     );
@@ -247,5 +296,52 @@ describe('sidepanel keyword state', () => {
     await settle();
     expect(container.textContent).not.toContain('SERP 1건 첨부됨');
     expect(container.textContent).not.toContain('15편 콘텐츠 플랜');
+
+    browserMock.tabs.sendMessage.mockResolvedValueOnce({
+      ok: false,
+      error: 'unsupported_serp_dom',
+      query: '알 수 없는 화면',
+      results: [],
+    });
+    await act(async () => button(container, '현재 검색어 가져오기').click());
+    await settle();
+    expect(container.textContent).toContain('현재 네이버 검색 화면 구조를 인식하지 못했습니다.');
+  });
+
+  it('reanalyzes related and cluster keywords without carrying stale SERP state', async () => {
+    const analyzeBodies: Array<{ keyword: string; serp: unknown }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/v1/handshake')) return response({ status: 'ok' });
+        if (url.endsWith('/v1/keywords/analyze')) {
+          const body = JSON.parse(String(init?.body));
+          analyzeBodies.push(body);
+          const suggested = body.keyword.startsWith('시작');
+          return response(suggested ? analysisWithSuggestions(body.keyword) : analysis(body.keyword));
+        }
+        return response({}, 404);
+      }),
+    );
+    await act(async () => root.render(wrapper(<App />)));
+    await settle();
+
+    const input = container.querySelector<HTMLInputElement>('input[placeholder="키워드 입력"]')!;
+    await act(async () => setInput(input, '시작 키워드'));
+    await act(async () => button(container, '분석').click());
+    await settle();
+    await act(async () => button(container, '재분석').click());
+    await settle();
+    expect(input.value).toBe('연관 키워드');
+    expect(analyzeBodies.at(-1)).toMatchObject({ keyword: '연관 키워드', serp: null });
+
+    await act(async () => setInput(input, '시작 클러스터'));
+    await act(async () => button(container, '분석').click());
+    await settle();
+    await act(async () => button(container, '클러스터 키워드').click());
+    await settle();
+    expect(input.value).toBe('클러스터 키워드');
+    expect(analyzeBodies.at(-1)).toMatchObject({ keyword: '클러스터 키워드', serp: null });
   });
 });

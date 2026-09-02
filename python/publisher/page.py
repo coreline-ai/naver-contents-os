@@ -7,8 +7,13 @@ the adapter searches the page first, then every frame.
 
 from __future__ import annotations
 
+import json
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 
 class PageLike(Protocol):
@@ -20,16 +25,21 @@ class PageLike(Protocol):
     def is_enabled(self, selector: str) -> bool: ...
     def is_editable(self, selector: str) -> bool: ...
     def wait_for_any(self, selectors: list[str], timeout_ms: int) -> str | None: ...
+    def fingerprint(self, selector: str) -> str: ...
     def click(self, selector: str) -> None: ...
     def type_text(self, selector: str, text: str, delay_ms: int) -> None: ...
     def press(self, key: str) -> None: ...
+    def capture_evidence(self, label: str) -> dict[str, str]: ...
 
 
 class PlaywrightPageAdapter:
     """Wraps a sync_api Page. Import of playwright stays inside browser.py."""
 
-    def __init__(self, page):
+    def __init__(self, page, artifact_dir: str | Path | None = None):
         self._page = page
+        self._artifact_dir = Path(artifact_dir) if artifact_dir else (
+            Path(__file__).resolve().parents[2] / "data" / "publisher-artifacts"
+        )
 
     def goto(self, url: str) -> None:
         self._page.goto(url, wait_until="domcontentloaded")
@@ -72,6 +82,21 @@ class PlaywrightPageAdapter:
             time.sleep(0.1)
         return None
 
+    def fingerprint(self, selector: str) -> str:
+        locator = self._find(selector)
+        if locator is None:
+            return ""
+        return str(
+            locator.evaluate(
+                """(node) => JSON.stringify({
+                    text: (node.textContent || '').trim().slice(0, 120),
+                    className: String(node.className || '').slice(0, 200),
+                    ariaLive: node.getAttribute('aria-live') || '',
+                    dataState: node.getAttribute('data-state') || ''
+                })"""
+            )
+        )
+
     def click(self, selector: str) -> None:
         locator = self._find(selector)
         if locator is None:
@@ -87,6 +112,76 @@ class PlaywrightPageAdapter:
 
     def press(self, key: str) -> None:
         self._page.keyboard.press(key)
+
+    def capture_evidence(self, label: str) -> dict[str, str]:
+        """Capture local-only failure evidence without serializing editor text or values."""
+        self._artifact_dir.mkdir(parents=True, exist_ok=True)
+        safe_label = "".join(char if char.isalnum() or char in "-_" else "-" for char in label)
+        stem = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{safe_label[:80]}-{uuid4().hex[:8]}"
+        evidence: dict[str, str] = {
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "url": _sanitize_url(self.url),
+        }
+
+        screenshot_path = self._artifact_dir / f"{stem}.png"
+        try:
+            masks = []
+            sensitive_selector = (
+                "input, textarea, [contenteditable='true'], img, "
+                ".se-documentTitle .se-text-paragraph, "
+                ".se-title-text, "
+                ".se-main-container .se-text-paragraph, "
+                ".se-component-content .se-text-paragraph, "
+                ".tag_area, [class*='tag'], "
+                "[class*='profile'], [class*='account'], [class*='nickname'], [class*='user']"
+            )
+            for frame in [self._page.main_frame, *self._page.frames]:
+                try:
+                    masks.append(frame.locator(sensitive_selector))
+                except Exception:  # noqa: BLE001 - detached frames are expected noise
+                    continue
+            self._page.screenshot(
+                path=str(screenshot_path),
+                full_page=False,
+                mask=masks,
+                mask_color="#64748b",
+            )
+            evidence["screenshot_path"] = str(screenshot_path)
+        except Exception as exc:  # noqa: BLE001 - partial evidence is still useful
+            evidence["screenshot_error"] = type(exc).__name__
+
+        dom_path = self._artifact_dir / f"{stem}.dom.json"
+        try:
+            structure = self._page.evaluate(
+                """() => Array.from(document.querySelectorAll('*')).slice(0, 500).map((node) => ({
+                    tag: node.tagName,
+                    id: (node.id || '').slice(0, 120),
+                    classes: Array.from(node.classList || []).slice(0, 12).map((value) => value.slice(0, 120)),
+                    role: (node.getAttribute('role') || '').slice(0, 80),
+                    contentEditable: node.getAttribute('contenteditable') || ''
+                }))"""
+            )
+            dom_path.write_text(
+                json.dumps(
+                    {
+                        "captured_at": evidence["captured_at"],
+                        "url": evidence["url"],
+                        "nodes": structure,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            evidence["dom_path"] = str(dom_path)
+        except Exception as exc:  # noqa: BLE001 - screenshot may still be available
+            evidence["dom_error"] = type(exc).__name__
+        return evidence
+
+
+def _sanitize_url(url: str) -> str:
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
 def pick_selector(

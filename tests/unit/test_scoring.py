@@ -114,3 +114,16 @@ def test_short_trend_series_is_missing_not_zero():
     result = OpportunityScorer().score(**inputs)
     by_name = {c["component"]: c for c in result["contributions"]}
     assert by_name["trend"]["status"] == "missing"
+
+
+def test_score_reports_coverage_and_confidence():
+    full = OpportunityScorer().score(**full_inputs())
+    assert full["coverage_weight"] == 0.75
+    assert full["available_component_count"] == 6
+    assert full["total_component_count"] == 8
+    assert full["confidence"] == "high"
+
+    missing = OpportunityScorer().score("kw", None, None, None, today=TODAY)
+    assert missing["coverage_weight"] == 0
+    assert missing["available_component_count"] == 0
+    assert missing["confidence"] == "unavailable"

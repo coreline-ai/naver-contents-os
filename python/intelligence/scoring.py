@@ -21,6 +21,8 @@ from intelligence.keyword.models import (
 from providers.models import KeywordMetric, SearchItem, SearchLandscape, SerpObservation, TrendSeries
 
 SCORE_VERSION = "v1"
+CONFIDENCE_HIGH_MIN = 0.75
+CONFIDENCE_MEDIUM_MIN = 0.50
 
 # Fixed reference scales — changing any of these requires a new SCORE_VERSION.
 VOLUME_REF_MAX = 100_000
@@ -79,6 +81,14 @@ class OpportunityScorer:
 
         available = [c for c in components if c.available]
         total_weight = sum(c.weight for c in available)
+        if total_weight >= CONFIDENCE_HIGH_MIN:
+            confidence = "high"
+        elif total_weight >= CONFIDENCE_MEDIUM_MIN:
+            confidence = "medium"
+        elif total_weight > 0:
+            confidence = "low"
+        else:
+            confidence = "unavailable"
         value = (
             round(100 * sum(c.weight * c.normalized for c in available) / total_weight, 1)
             if total_weight > 0
@@ -87,6 +97,10 @@ class OpportunityScorer:
         return {
             "value": value,
             "score_version": self.score_version,
+            "coverage_weight": round(total_weight, 2),
+            "available_component_count": len(available),
+            "total_component_count": len(components),
+            "confidence": confidence,
             "contributions": [
                 {
                     "component": c.name,

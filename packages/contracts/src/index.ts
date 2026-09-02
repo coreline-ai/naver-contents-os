@@ -75,6 +75,10 @@ export interface ScoreContribution {
 export interface OpportunityScore {
   value: number | null;
   score_version: string;
+  coverage_weight: number;
+  available_component_count: number;
+  total_component_count: number;
+  confidence: 'unavailable' | 'low' | 'medium' | 'high';
   contributions: ScoreContribution[];
   missing: string[];
 }
@@ -159,6 +163,25 @@ export interface DraftDetail {
   model: string;
   prompt_version: string;
   versions: DraftVersion[];
+}
+
+export interface PublishJobHistoryEntry {
+  stage: string;
+  status: string;
+  at: string;
+  error_code?: string | null;
+  detail?: string;
+  evidence?: Record<string, unknown>;
+}
+
+export interface PublishJob {
+  job_id: number;
+  draft_id: number;
+  status: string;
+  stage: string;
+  error_code: string | null;
+  detail: string;
+  history: PublishJobHistoryEntry[];
 }
 
 export interface AnalyzeResponse {

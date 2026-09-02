@@ -201,3 +201,18 @@ class SqlJobStore:
             job.detail = detail
             job.history = [*job.history, history_entry]
             session.commit()
+
+    def get(self, job_id: int) -> dict | None:
+        with self._sessions() as session:
+            job = session.get(PublishJob, job_id)
+            if job is None:
+                return None
+            return {
+                "job_id": job.id,
+                "draft_id": job.draft_id,
+                "status": job.status,
+                "stage": job.stage,
+                "error_code": job.error_code,
+                "detail": job.detail,
+                "history": list(job.history),
+            }

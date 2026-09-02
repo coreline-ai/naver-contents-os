@@ -1,8 +1,9 @@
 import type {
   AnalyzeResponse,
-  DraftCreateResponse,
+  DraftDetail,
   DraftGenerationMode,
   PlanItem,
+  PublishJob,
   SerpObservation,
 } from '@ncos/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -24,13 +25,22 @@ const STATUS_LABEL: Record<string, string> = {
   upstream_unreachable: '연결 오류',
 };
 
+const CONFIDENCE_LABEL: Record<string, string> = {
+  unavailable: '판정 불가',
+  low: '낮음',
+  medium: '보통',
+  high: '높음',
+};
+
 export default function App() {
   const settings = useSettings();
   const [keyword, setKeyword] = useState('');
   const [serp, setSerp] = useState<SerpObservation | null>(null);
+  const [serpNotice, setSerpNotice] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
-  const [draft, setDraft] = useState<DraftCreateResponse | null>(null);
+  const [draft, setDraft] = useState<DraftDetail | null>(null);
+  const [publishJobId, setPublishJobId] = useState<number | null>(null);
   const [blogInspection, setBlogInspection] = useState<BlogParse | null>(null);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
   const analysisEpoch = useRef(0);
@@ -68,7 +78,7 @@ export default function App() {
   });
 
   const createDraft = useMutation<
-    DraftCreateResponse,
+    DraftDetail,
     CoreError,
     {
       planItem: PlanItem;
@@ -77,17 +87,54 @@ export default function App() {
       requestId: number;
     }
   >({
-    mutationFn: ({ planItem, mode, analysis }) => {
-      return client.createDraft({
+    mutationFn: async ({ planItem, mode, analysis }) => {
+      const created = await client.createDraft({
         keyword: analysis.keyword,
         snapshot_id: analysis.snapshot_id,
         plan_item: planItem,
         questions: analysis.questions.filter((q) => q.kind === 'question').map((q) => q.text),
         generation_mode: mode,
       });
+      return client.getDraft(created.draft_id);
     },
     onSuccess: (data, variables) => {
       if (variables.requestId === draftEpoch.current) setDraft(data);
+    },
+  });
+
+  const addDraftVersion = useMutation<
+    DraftDetail,
+    CoreError,
+    { draftId: number; title: string; body: string; note: string; requestId: number }
+  >({
+    mutationFn: async ({ draftId, title, body, note }) => {
+      await client.addDraftVersion(draftId, { title, body, note });
+      return client.getDraft(draftId);
+    },
+    onSuccess: (data, variables) => {
+      if (variables.requestId === draftEpoch.current) setDraft(data);
+    },
+  });
+
+  const startPublishJob = useMutation<
+    PublishJob,
+    CoreError,
+    { draftId: number; blogId: string; tags: string[]; requestId: number }
+  >({
+    mutationFn: ({ draftId, blogId, tags }) =>
+      client.startPublishJob(draftId, { blog_id: blogId, tags }),
+    onSuccess: (job, variables) => {
+      if (variables.requestId === draftEpoch.current) setPublishJobId(job.job_id);
+    },
+  });
+
+  const publishJob = useQuery({
+    queryKey: ['publish-job', publishJobId, settings.coreUrl],
+    queryFn: () => client.getPublishJob(publishJobId!),
+    enabled: publishJobId != null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === 'failed' || status === 'draft_saved' ? false : 1_000;
     },
   });
 
@@ -96,8 +143,11 @@ export default function App() {
     ++draftEpoch.current;
     analyze.reset();
     createDraft.reset();
+    addDraftVersion.reset();
+    startPublishJob.reset();
     setResult(null);
     setDraft(null);
+    setPublishJobId(null);
     return requestId;
   }
 
@@ -105,16 +155,26 @@ export default function App() {
     clearKeywordResults();
     setKeyword(nextKeyword);
     setSerp(null);
+    setSerpNotice('');
   }
 
-  function runAnalysis(targetKeyword: string, force = false) {
+  function runAnalysis(
+    targetKeyword: string,
+    force = false,
+    requestSerp: SerpObservation | null = serp,
+  ) {
     if (!targetKeyword.trim()) return;
     const requestId = ++analysisEpoch.current;
     ++draftEpoch.current;
     createDraft.reset();
     setDraft(null);
     if (!force) setResult(null);
-    analyze.mutate({ keyword: targetKeyword, force, serp, requestId });
+    analyze.mutate({ keyword: targetKeyword, force, serp: requestSerp, requestId });
+  }
+
+  function analyzeSuggestedKeyword(nextKeyword: string) {
+    changeKeyword(nextKeyword);
+    runAnalysis(nextKeyword, false, null);
   }
 
   function runCreateDraft(planItem: PlanItem, mode: DraftGenerationMode) {
@@ -126,18 +186,33 @@ export default function App() {
   async function pullCurrentSearch() {
     const requestId = clearKeywordResults();
     setSerp(null);
-    const parsed = await requestActiveTab<SerpParse>({ type: MSG_GET_SERP });
-    if (requestId !== analysisEpoch.current || !parsed?.query) return;
-    setKeyword(parsed.query);
-    if (parsed.ok && parsed.results.length > 0) {
+    setSerpNotice('');
+    try {
+      const parsed = await requestActiveTab<SerpParse>({ type: MSG_GET_SERP });
+      if (requestId !== analysisEpoch.current) return;
+      if (!parsed?.query) {
+        setSerpNotice('현재 탭에서 검색어를 확인하지 못했습니다.');
+        return;
+      }
+      setKeyword(parsed.query);
+      if (!parsed.ok) {
+        setSerpNotice('현재 네이버 검색 화면 구조를 인식하지 못했습니다.');
+        return;
+      }
+      if (parsed.results.length === 0) {
+        setSerpNotice('현재 검색 결과가 0건입니다.');
+        return;
+      }
       setSerp({
         source: 'BROWSER_DOM',
         collected_at: new Date().toISOString(),
         query: parsed.query,
         results: parsed.results,
       });
-    } else {
-      setSerp(null);
+    } catch {
+      if (requestId === analysisEpoch.current) {
+        setSerpNotice('현재 탭과 연결할 수 없습니다. 네이버 검색 페이지인지 확인하세요.');
+      }
     }
   }
 
@@ -226,6 +301,7 @@ export default function App() {
             </button>
           )}
         </div>
+        {serpNotice && <p className="mt-2 text-xs text-amber-700">{serpNotice}</p>}
         {currentAnalysisMutation && analyze.isError && (
           <p className="mt-2 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">
             오류({analyze.error.code}): {analyze.error.message}
@@ -237,6 +313,10 @@ export default function App() {
         <>
           <ScoreCard result={result} />
           <LandscapeCard result={result} />
+          <RelatedKeywordsCard result={result} onSelect={analyzeSuggestedKeyword} />
+          <TrendCard result={result} />
+          <ClusterCard result={result} onSelect={analyzeSuggestedKeyword} />
+          <SearchEvidenceCard result={result} />
           <PlanCard
             plan={result.plan}
             creating={currentDraftMutation && createDraft.isPending}
@@ -248,7 +328,33 @@ export default function App() {
               초안 오류({createDraft.error.code}): {createDraft.error.message}
             </p>
           )}
-          {draft && <DraftCard draft={draft} />}
+          {draft && (
+            <DraftCard
+              draft={draft}
+              savingVersion={addDraftVersion.isPending}
+              versionError={addDraftVersion.error?.message ?? ''}
+              onSaveVersion={(title, body, note) =>
+                addDraftVersion.mutate({
+                  draftId: draft.draft_id,
+                  title,
+                  body,
+                  note,
+                  requestId: draftEpoch.current,
+                })
+              }
+              startingPublish={startPublishJob.isPending}
+              publishError={startPublishJob.error?.message ?? publishJob.error?.message ?? ''}
+              publishJob={publishJob.data ?? startPublishJob.data ?? null}
+              onPublish={(blogId, tags) =>
+                startPublishJob.mutate({
+                  draftId: draft.draft_id,
+                  blogId,
+                  tags,
+                  requestId: draftEpoch.current,
+                })
+              }
+            />
+          )}
         </>
       )}
       {blogInspection && <BlogInspectionCard inspection={blogInspection} />}
@@ -256,7 +362,7 @@ export default function App() {
   );
 }
 
-function ScoreCard({ result }: { result: AnalyzeResponse }) {
+export function ScoreCard({ result }: { result: AnalyzeResponse }) {
   const score = result.score;
   return (
     <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -281,6 +387,11 @@ function ScoreCard({ result }: { result: AnalyzeResponse }) {
         </tbody>
       </table>
       <div className="mt-2 text-[11px] text-slate-400">
+        신뢰도 {CONFIDENCE_LABEL[score.confidence] ?? score.confidence} · coverage{' '}
+        {Math.round(score.coverage_weight * 100)}% · 사용 가능 {score.available_component_count}/
+        {score.total_component_count}
+      </div>
+      <div className="mt-1 text-[11px] text-slate-400">
         수집: {new Date(result.collected_at).toLocaleString()} · 출처:{' '}
         {Object.entries(result.data_status)
           .map(([k, v]) => `${k} ${STATUS_LABEL[v] ?? v}`)
@@ -290,14 +401,14 @@ function ScoreCard({ result }: { result: AnalyzeResponse }) {
   );
 }
 
-function LandscapeCard({ result }: { result: AnalyzeResponse }) {
+export function LandscapeCard({ result }: { result: AnalyzeResponse }) {
   const l = result.landscape;
   const m = result.metric;
   if (!l && !m) return null;
   const chips: [string, number | null][] = [
-    ['월간 검색량', m?.monthly_pc_searches != null || m?.monthly_mobile_searches != null
-      ? (m?.monthly_pc_searches ?? 0) + (m?.monthly_mobile_searches ?? 0)
-      : null],
+    ['PC 검색량', m?.monthly_pc_searches ?? null],
+    ['모바일 검색량', m?.monthly_mobile_searches ?? null],
+    ['월간 합계', m ? monthlyTotal(m) : null],
     ['블로그', l?.blog_total ?? null],
     ['카페', l?.cafe_total ?? null],
     ['지식iN', l?.kin_total ?? null],
@@ -314,7 +425,166 @@ function LandscapeCard({ result }: { result: AnalyzeResponse }) {
           </span>
         ))}
         {m?.volume_masked && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs">검색량 마스킹(&lt;10)</span>}
+        {m?.ad_competition && (
+          <span className="rounded-full bg-violet-50 px-2 py-0.5 text-xs">광고 경쟁 {m.ad_competition}</span>
+        )}
       </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {m && <DataMeta source={m.source} collectedAt={m.collected_at} fromCache={m.from_cache} />}
+        {l && <DataMeta source={l.source} collectedAt={l.collected_at} fromCache={l.from_cache} />}
+      </div>
+    </section>
+  );
+}
+
+function monthlyTotal(metric: AnalyzeResponse['related_keywords'][number]): number | null {
+  if (metric.monthly_pc_searches == null || metric.monthly_mobile_searches == null) return null;
+  return metric.monthly_pc_searches + metric.monthly_mobile_searches;
+}
+
+function mobileShare(metric: AnalyzeResponse['related_keywords'][number]): number | null {
+  const total = monthlyTotal(metric);
+  if (total == null || total <= 0 || metric.monthly_mobile_searches == null) return null;
+  return metric.monthly_mobile_searches / total;
+}
+
+function DataMeta({
+  source,
+  collectedAt,
+  fromCache,
+}: {
+  source: string;
+  collectedAt: string;
+  fromCache?: boolean;
+}) {
+  const label = source === 'SEARCH_AD' ? 'SearchAd' : source === 'NAVER_API_HUB' ? 'API HUB' : source === 'BROWSER_DOM' ? 'Browser DOM' : source;
+  return (
+    <span className="text-[10px] text-slate-400">
+      {label} · {new Date(collectedAt).toLocaleString()}{fromCache ? ' · cache' : ''}
+    </span>
+  );
+}
+
+export function RelatedKeywordsCard({
+  result,
+  onSelect,
+}: {
+  result: AnalyzeResponse;
+  onSelect: (keyword: string) => void;
+}) {
+  if (result.related_keywords.length === 0) return null;
+  const rows = [...result.related_keywords].sort((a, b) => {
+    const volumeDiff = (monthlyTotal(b) ?? -1) - (monthlyTotal(a) ?? -1);
+    return volumeDiff || a.keyword.localeCompare(b.keyword, 'ko');
+  });
+  return (
+    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex items-baseline justify-between">
+        <h2 className="font-semibold">연관 키워드</h2>
+        <span className="text-[10px] text-slate-400">{rows.length}개 · SearchAd</span>
+      </div>
+      <div className="mt-2 max-h-72 overflow-auto">
+        <table className="w-full text-[11px]">
+          <thead className="sticky top-0 bg-white text-slate-400">
+            <tr><th className="py-1 text-left">키워드</th><th className="text-right">PC</th><th className="text-right">모바일</th><th className="text-right">합계</th><th className="text-right">모바일 비중</th><th className="text-right">경쟁</th><th /></tr>
+          </thead>
+          <tbody>
+            {rows.map((metric) => {
+              const total = monthlyTotal(metric);
+              const share = mobileShare(metric);
+              return (
+                <tr key={metric.keyword} className="border-t border-slate-100">
+                  <td className="max-w-32 truncate py-1.5 font-medium" title={metric.keyword}>{metric.keyword}</td>
+                  <td className="text-right tabular-nums">{metric.monthly_pc_searches?.toLocaleString() ?? (metric.volume_masked ? '<10' : '—')}</td>
+                  <td className="text-right tabular-nums">{metric.monthly_mobile_searches?.toLocaleString() ?? (metric.volume_masked ? '<10' : '—')}</td>
+                  <td className="text-right tabular-nums" title={total == null ? '정확한 합계 결측' : undefined}>{total?.toLocaleString() ?? '—'}</td>
+                  <td className="text-right tabular-nums">{share == null ? '—' : `${Math.round(share * 100)}%`}</td>
+                  <td className="text-right">{metric.ad_competition ?? '—'}</td>
+                  <td className="pl-1 text-right"><button className="rounded border border-slate-200 px-1 py-0.5 hover:bg-slate-50" onClick={() => onSelect(metric.keyword)}>재분석</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2"><DataMeta source={rows[0].source} collectedAt={rows[0].collected_at} fromCache={rows[0].from_cache} /></div>
+    </section>
+  );
+}
+
+export function TrendCard({ result }: { result: AnalyzeResponse }) {
+  const trend = result.trend;
+  if (!trend || trend.points.length === 0) return null;
+  const points = trend.points.slice(-12);
+  const polyline = points.map((point, index) => {
+    const x = points.length === 1 ? 150 : (index / (points.length - 1)) * 300;
+    const y = 75 - Math.max(0, Math.min(100, point.ratio)) * 0.65;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return (
+    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <h2 className="font-semibold">검색 관심도 추이</h2>
+      <p className="mt-0.5 text-[10px] text-slate-400">기간 내 최댓값을 100으로 둔 상대 지표이며 절대 검색량이 아닙니다.</p>
+      <svg viewBox="0 0 300 80" className="mt-2 h-24 w-full" role="img" aria-label="상대 검색 관심도 추이">
+        <line x1="0" y1="75" x2="300" y2="75" stroke="#e2e8f0" />
+        <polyline points={polyline} fill="none" stroke="#059669" strokeWidth="3" strokeLinejoin="round" />
+      </svg>
+      <div className="flex justify-between text-[10px] text-slate-400"><span>{points[0].period}</span><span>최근 {points.at(-1)?.ratio.toFixed(1)}</span><span>{points.at(-1)?.period}</span></div>
+      <div className="mt-2"><DataMeta source={trend.source} collectedAt={trend.collected_at} fromCache={trend.from_cache} /></div>
+    </section>
+  );
+}
+
+export function ClusterCard({
+  result,
+  onSelect,
+}: {
+  result: AnalyzeResponse;
+  onSelect: (keyword: string) => void;
+}) {
+  if (result.clusters.length === 0) return null;
+  return (
+    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <h2 className="font-semibold">키워드 클러스터</h2>
+      <div className="mt-2 space-y-2">
+        {result.clusters.map((cluster) => (
+          <div key={cluster.label} className="rounded border border-slate-100 p-2">
+            <div className="flex justify-between text-xs"><b>{cluster.label}</b><span className="text-slate-400">검색량 합계 {cluster.total_volume.toLocaleString()}</span></div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {cluster.keywords.map((item) => <button key={item} className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] hover:bg-slate-200" onClick={() => onSelect(item)}>{item}</button>)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function SearchEvidenceCard({ result }: { result: AnalyzeResponse }) {
+  const apiItems = result.landscape?.top_results ?? [];
+  const browserItems = result.serp?.results ?? [];
+  if (apiItems.length === 0 && browserItems.length === 0) return null;
+  return (
+    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <h2 className="font-semibold">검색 결과 근거</h2>
+      {browserItems.length > 0 && (
+        <div className="mt-2">
+          <h3 className="text-xs font-medium text-emerald-700">Browser SERP</h3>
+          <ol className="mt-1 space-y-1 text-[11px]">
+            {browserItems.slice(0, 10).map((item) => <li key={`${item.rank}-${item.url}`} className="flex gap-1.5"><span className="w-4 shrink-0 tabular-nums text-slate-400">{item.rank}</span><div className="min-w-0"><a href={item.url} target="_blank" rel="noreferrer" className="block truncate text-sky-700">{item.title || item.url}</a><span className="text-[10px] text-slate-400">{item.result_type}{item.is_ad ? ' · 광고' : ''}{item.posted_at ? ` · ${item.posted_at}` : ''}</span></div></li>)}
+          </ol>
+          {result.serp && <div className="mt-1"><DataMeta source={result.serp.source} collectedAt={result.serp.collected_at} /></div>}
+        </div>
+      )}
+      {apiItems.length > 0 && (
+        <div className="mt-3 border-t border-slate-100 pt-2">
+          <h3 className="text-xs font-medium text-indigo-700">API HUB 블로그 결과</h3>
+          <ol className="mt-1 space-y-1 text-[11px]">
+            {apiItems.slice(0, 10).map((item, index) => <li key={`${index}-${item.link}`} className="flex gap-1.5"><span className="w-4 shrink-0 tabular-nums text-slate-400">{index + 1}</span><div className="min-w-0"><a href={item.link} target="_blank" rel="noreferrer" className="block truncate text-sky-700">{item.title || item.link}</a><span className="text-[10px] text-slate-400">{item.author || '작성자 미상'}{item.posted_at ? ` · ${item.posted_at}` : ''}</span></div></li>)}
+          </ol>
+          {result.landscape && <div className="mt-1"><DataMeta source={result.landscape.source} collectedAt={result.landscape.collected_at} fromCache={result.landscape.from_cache} /></div>}
+        </div>
+      )}
     </section>
   );
 }
@@ -367,19 +637,80 @@ export function PlanCard({
   );
 }
 
-export function DraftCard({ draft }: { draft: DraftCreateResponse }) {
+export function DraftCard({
+  draft,
+  savingVersion = false,
+  versionError = '',
+  onSaveVersion = () => undefined,
+  startingPublish = false,
+  publishError = '',
+  publishJob = null,
+  onPublish = () => undefined,
+}: {
+  draft: DraftDetail;
+  savingVersion?: boolean;
+  versionError?: string;
+  onSaveVersion?: (title: string, body: string, note: string) => void;
+  startingPublish?: boolean;
+  publishError?: string;
+  publishJob?: PublishJob | null;
+  onPublish?: (blogId: string, tags: string[]) => void;
+}) {
+  const latest = draft.versions.at(-1)!;
+  const [title, setTitle] = useState(latest.title);
+  const [body, setBody] = useState(latest.body);
+  const [note, setNote] = useState('');
+  const [blogId, setBlogId] = useState('');
+  const [tagsText, setTagsText] = useState('');
+  useEffect(() => {
+    const current = draft.versions.at(-1)!;
+    setTitle(current.title);
+    setBody(current.body);
+    setNote('');
+  }, [draft]);
+  const dirty = title !== latest.title || body !== latest.body;
+  const canPublish = !dirty && /^[A-Za-z0-9_-]+$/.test(blogId) && !startingPublish;
+
+  function confirmPublish() {
+    if (!canPublish) return;
+    if (!window.confirm('전용 Chrome의 SmartEditor에 이 최신 버전을 입력하고 임시저장할까요? 공개 발행은 하지 않습니다.')) return;
+    onPublish(blogId, tagsText.split(',').map((tag) => tag.trim()).filter(Boolean));
+  }
+
   return (
     <section className="mt-3 rounded-lg border border-emerald-200 bg-white p-3">
       <div className="flex items-center justify-between">
-        <h2 className="font-semibold">생성된 초안 v{draft.version}</h2>
+        <h2 className="font-semibold">생성된 초안 v{latest.version}</h2>
         <span className="text-[10px] text-slate-400">
           {draft.provider}{draft.model ? ` · ${draft.model}` : ''}
         </span>
       </div>
-      <h3 className="mt-2 text-sm font-medium">{draft.title}</h3>
-      <p className="mt-1 text-[11px] text-slate-400">본문 {draft.body.length.toLocaleString()}자 · draft #{draft.draft_id}</p>
-      <div className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs leading-5">
-        {draft.body}
+      <p className="mt-1 text-[11px] text-slate-400">본문 {body.length.toLocaleString()}자 · draft #{draft.draft_id} · 버전 {draft.versions.length}개</p>
+      <label className="mt-2 block text-[11px] font-medium text-slate-500">제목</label>
+      <input className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs" value={title} onChange={(event) => setTitle(event.target.value)} />
+      <label className="mt-2 block text-[11px] font-medium text-slate-500">본문</label>
+      <textarea className="mt-1 min-h-48 w-full rounded border border-slate-300 p-2 text-xs leading-5" value={body} onChange={(event) => setBody(event.target.value)} />
+      <div className="mt-2 flex gap-1">
+        <input className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs" value={note} onChange={(event) => setNote(event.target.value)} placeholder="수정 사유" />
+        <button className="rounded bg-slate-800 px-2 py-1 text-xs text-white disabled:opacity-40" disabled={!dirty || !title.trim() || !body.trim() || savingVersion} onClick={() => onSaveVersion(title, body, note)}>{savingVersion ? '저장 중…' : '새 버전 저장'}</button>
+      </div>
+      {versionError && <p className="mt-1 text-xs text-rose-700">버전 저장 오류: {versionError}</p>}
+      <div className="mt-2 flex flex-wrap gap-1">
+        {draft.versions.map((version) => (
+          <button key={version.version} className={`rounded px-1.5 py-0.5 text-[10px] ${version.version === latest.version ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`} onClick={() => { setTitle(version.title); setBody(version.body); setNote(`v${version.version} 기준 수정`); }}>v{version.version}{version.note ? ` · ${version.note}` : ''}</button>
+        ))}
+      </div>
+      <div className="mt-3 border-t border-slate-100 pt-3">
+        <h3 className="text-xs font-semibold">SmartEditor 임시저장</h3>
+        <p className="mt-0.5 text-[10px] text-slate-400">전용 Chrome·로그인·CDP가 준비된 경우에만 실행됩니다. 공개 발행은 하지 않습니다.</p>
+        <div className="mt-2 flex gap-1">
+          <input className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs" value={blogId} onChange={(event) => setBlogId(event.target.value)} placeholder="네이버 blog ID" />
+          <input className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs" value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="태그1, 태그2" />
+        </div>
+        {dirty && <p className="mt-1 text-[10px] text-amber-700">수정 내용을 새 버전으로 저장해야 임시저장을 시작할 수 있습니다.</p>}
+        <button className="mt-2 w-full rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40" disabled={!canPublish} onClick={confirmPublish}>{startingPublish ? 'Job 시작 중…' : '최신 버전 임시저장 시작'}</button>
+        {publishJob && <p className={`mt-2 rounded px-2 py-1 text-xs ${publishJob.status === 'failed' ? 'bg-rose-50 text-rose-700' : publishJob.status === 'draft_saved' ? 'bg-emerald-50 text-emerald-700' : 'bg-sky-50 text-sky-700'}`}>Job #{publishJob.job_id} · {publishJob.status} · {publishJob.stage || '대기'}</p>}
+        {publishError && <p className="mt-1 text-xs text-rose-700">Publisher 오류: {publishError}</p>}
       </div>
     </section>
   );

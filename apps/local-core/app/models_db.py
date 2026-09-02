@@ -107,5 +107,5 @@ class ApiUsage(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     provider: Mapped[str] = mapped_column(String(40))
-    period: Mapped[str] = mapped_column(String(6))  # YYYYMM (UTC)
+    period: Mapped[str] = mapped_column(String(8))  # YYYYMM or YYYYMMDD (UTC)
     count: Mapped[int] = mapped_column(Integer, default=0)
