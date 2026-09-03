@@ -2,6 +2,8 @@
 
 # 🟢 Naver Content OS
 
+<img width="2752" height="1536" alt="콘텐츠_제작용_인공지능_시스템_안내" src="https://github.com/user-attachments/assets/1d28a858-5ac1-4701-8297-33920f3028f4" />
+
 ### 최신 키워드 발견부터 근거 기반 콘텐츠 기획, AI 초안, SmartEditor 임시저장까지
 
 **네이버 콘텐츠 제작 전 과정을 하나의 로컬 워크스페이스로 연결하는 Chrome Extension + Local Core**
