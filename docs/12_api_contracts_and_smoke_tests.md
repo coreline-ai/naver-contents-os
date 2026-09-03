@@ -129,6 +129,38 @@ signature = Base64(HMAC_SHA256(secret_utf8, message_utf8))
 
 Search Trend ratio는 같은 요청 범위의 상대지수입니다. 변화율은 한 keyword series 안에서만 계산하고, 이전 평균 0에서 최근 값이 생기면 무한 퍼센트 대신 `new`로 반환합니다. 각 7일 구간 6일 이상, 전체 12/14일 이상 관측되지 않으면 `insufficient`입니다. 뉴스는 전체 발생량이 아니라 최대 100건 표본이므로 `news_7d_sample_count`와 `sample_capped`를 함께 표시합니다.
 
+## 콘텐츠 운영 API
+
+모든 endpoint는 Local Core DB만 읽거나 사용자가 확인한 상태만 기록합니다. 목록·FactPack·의도 보드·추천 조회는 외부 provider, LLM, Publisher를 호출하지 않습니다.
+
+| Method | Endpoint | 계약 |
+|---|---|---|
+| `GET` | `/v1/drafts` | 제목·키워드·상태 검색, cursor pagination, 본문 제외 |
+| `GET` | `/v1/drafts/{id}` | Draft 상세와 전체 버전 이력 |
+| `PATCH` | `/v1/drafts/{id}/status` | `editing/review_ready/archived` 명시적 전이 |
+| `POST` | `/v1/published-contents` | 실제 공개 확인과 HTTP(S) URL 필수 |
+| `GET` | `/v1/published-contents` | 공개·노후·보관 콘텐츠 목록 |
+| `PATCH` | `/v1/published-contents/{id}` | 제목·공개일·보관 상태 수정 |
+| `POST` | `/v1/factpacks` | 저장된 snapshot의 정규화 근거로 v1 생성 |
+| `GET` | `/v1/factpacks/{id}` | FactPack과 변경 불가능한 버전 이력 조회 |
+| `POST` | `/v1/factpacks/{id}/versions` | 근거 선택을 새 버전으로 저장 또는 승인 |
+| `GET` | `/v1/snapshots/{id}/intent-board` | `intent-v1` 로컬 분류 보드 |
+| `GET` | `/v1/work/today` | 로컬 근거 기반 추천 최대 5개 |
+
+발행 등록과 임시저장은 분리됩니다. `/v1/drafts/{id}/publish-jobs`가 `draft_saved`로 끝나도 `published_contents`는 생성되지 않습니다. 사용자가 공개 URL과 제목을 확인해 `confirmed=true`로 등록해야만 `published` 상태가 됩니다.
+
+FactPack 초안 연결 규칙:
+
+1. `fact_pack_id`와 `fact_pack_version`은 함께 전달합니다.
+2. FactPack keyword와 snapshot이 Draft 요청과 정확히 일치해야 합니다.
+3. 요청한 버전이 `approved`여야 합니다.
+4. 검증은 LLM 호출 전에 끝납니다.
+5. prompt에는 승인 버전의 `selected=true` 근거와 출처 표지만 들어갑니다.
+
+콘텐츠 상태 resolver는 `missing`, `draft_only`, `published`, `stale`, `archived`를 반환합니다. `stale` 경계는 실제 공개 시각 기준 90일입니다. 오늘의 추천 우선순위는 `실패 복구 → 검수 대기 → 임시저장 후 미발행 → 노후 공개 콘텐츠 → 상승 후보 미작성 → 고성과 광고 키워드 미작성`이며 stale/partial 외부 근거는 새 글 작성을 권하지 않고 `refresh_data`만 반환합니다.
+
+PC·모바일 도넛은 SearchAd의 정확한 `monthly_pc_searches`와 `monthly_mobile_searches`만 사용합니다. `< 10` 마스킹, null, 한쪽 결측, 합계 0에서는 비율을 계산하지 않습니다. Audience Trend의 기기 segment와 혼합하지 않습니다.
+
 ## API 스모크 테스트
 
 실제 인증값을 사용하는 테스트는 기본 단위 테스트와 분리해 `smoke` marker로 실행합니다.

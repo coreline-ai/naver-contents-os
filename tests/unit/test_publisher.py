@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from publisher.editor import EditorError, SmartEditorAdapter
-from publisher.health import HealthReport, run_health_check
+from publisher.health import EDITOR_LOAD_TIMEOUT_MS, HealthReport, run_health_check
 from publisher.jobs import PublishJobRunner
 from publisher.page import PlaywrightPageAdapter
 from publisher.selectors import SMARTEDITOR_SELECTORS
@@ -94,9 +94,15 @@ def make_adapter(page):
 
 
 def test_health_check_passes_with_full_dom():
-    report = run_health_check(FakePage(), "tester")
+    page = FakePage()
+    report = run_health_check(page, "tester")
     assert report.all_ok
     assert {c["name"] for c in report.checks} >= {"login_session", "title_area", "draft_save_button"}
+    assert (
+        "wait_for_any",
+        tuple(SMARTEDITOR_SELECTORS["editor_root"]),
+        EDITOR_LOAD_TIMEOUT_MS,
+    ) in page.actions
 
 
 def test_health_check_fails_when_logged_out():
@@ -132,6 +138,16 @@ def test_health_check_opens_publish_layer_and_requires_real_tag_input():
     assert "tag_input_reachable" in report.failed
     assert any(a[0] == "click" and a[1] in SMARTEDITOR_SELECTORS["publish_open_button"] for a in page.actions)
     assert ("press", "Escape") in page.actions
+
+
+def test_health_check_skips_publish_layer_when_tags_are_not_requested():
+    existing = ALL_SELECTORS - set(SMARTEDITOR_SELECTORS["publish_open_button"]) - set(
+        SMARTEDITOR_SELECTORS["tag_input"]
+    )
+    page = FakePage(existing=existing)
+    report = run_health_check(page, "tester", require_tags=False)
+    assert report.all_ok
+    assert "tag_input_reachable" not in {check["name"] for check in report.checks}
 
 
 def test_runner_stops_before_any_input_when_health_fails():
@@ -272,6 +288,26 @@ def test_save_draft_fallback_esc_then_retry():
     make_adapter(page).save_draft()
     assert ("press", "Escape") in page.actions
     assert ("click", primary) in page.actions
+
+
+def test_live_save_signal_selectors_cover_autosave_message_and_saved_draft_count():
+    assert "span[class^='autosave_message__'][class*='is_show__']" in (
+        SMARTEDITOR_SELECTORS["draft_save_success"]
+    )
+    assert "button[class^='save_count_btn__']" in SMARTEDITOR_SELECTORS["draft_save_state"]
+
+
+def test_save_draft_compares_persistent_state_from_before_typing_autosave():
+    class AutosavedBeforeFinalClickPage(FakePage):
+        def click(self, selector):
+            self.actions.append(("click", selector))
+
+    page = AutosavedBeforeFinalClickPage()
+    adapter = make_adapter(page)
+    adapter.remember_save_state()
+    page.state_revision = 1  # NAVER autosaved while the body was being typed.
+    adapter.save_draft()
+    assert ("click", SMARTEDITOR_SELECTORS["draft_save_button"][0]) in page.actions
 
 
 def test_save_draft_fails_without_success_signal():

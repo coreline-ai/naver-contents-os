@@ -14,6 +14,7 @@ export interface BlogParse {
   link_count: number;
   likes: number | null;
   comments: number | null;
+  url?: string;
 }
 
 export const BLOG_SELECTORS = {

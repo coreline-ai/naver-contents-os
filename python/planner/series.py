@@ -8,26 +8,12 @@ keyword, blog type, angle, and a data-backed reason. LLM writing happens later
 from __future__ import annotations
 
 from intelligence.keyword.models import compact
+from intelligence.keyword.intent import classify_intent
 from planner.templates import is_active
 from planner.types import BlogType
 from providers.models import KeywordMetric, SearchLandscape, TrendSeries
 
 DEFAULT_PLAN_SIZE = 15
-
-_TYPE_HINTS: tuple[tuple[str, BlogType], ...] = (
-    ("비교", BlogType.COMPARISON),
-    ("vs", BlogType.COMPARISON),
-    ("후기", BlogType.REVIEW),
-    ("리뷰", BlogType.REVIEW),
-    ("추천", BlogType.PRODUCT),
-    ("가격", BlogType.PRODUCT),
-    ("방법", BlogType.HOWTO),
-    ("하는법", BlogType.HOWTO),
-    ("조건", BlogType.POLICY),
-    ("기준", BlogType.POLICY),
-    ("신청", BlogType.POLICY),
-    ("승인", BlogType.POLICY),
-)
 
 _FILLER_ANGLES: tuple[tuple[str, BlogType], ...] = (
     ("자주 묻는 질문 FAQ 모음", BlogType.HOWTO),
@@ -41,10 +27,21 @@ _FILLER_ANGLES: tuple[tuple[str, BlogType], ...] = (
 
 
 def infer_blog_type(keyword: str) -> BlogType:
-    lowered = keyword.lower()
-    for marker, blog_type in _TYPE_HINTS:
-        if marker in lowered:
-            return blog_type
+    classified = classify_intent(keyword)
+    intent = classified["intent"]
+    markers = classified["matched_markers"]
+    if intent == "comparison_review":
+        if any(marker in {"후기", "리뷰", "경험"} for marker in markers):
+            return BlogType.REVIEW
+        if "추천" in markers:
+            return BlogType.PRODUCT
+        return BlogType.COMPARISON
+    if intent == "commercial":
+        return BlogType.PRODUCT
+    if intent in {"eligibility", "troubleshooting"}:
+        return BlogType.POLICY
+    if intent == "howto":
+        return BlogType.HOWTO
     return BlogType.HOWTO
 
 

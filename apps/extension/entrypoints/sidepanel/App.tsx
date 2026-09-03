@@ -2,6 +2,8 @@ import type {
   AnalyzeResponse,
   DraftDetail,
   DraftGenerationMode,
+  DraftSummary,
+  FactPack,
   KeywordSuggestion,
   PlanItem,
   PreflightResponse,
@@ -14,6 +16,7 @@ import type {
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
+import { PcMobileDonut } from '~/components/PcMobileDonut';
 import { CoreClient, CoreError } from '~/lib/core';
 import { MSG_GET_BLOG, MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
 import type { BlogParse } from '~/lib/parsers/blog';
@@ -59,6 +62,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
   const [draft, setDraft] = useState<DraftDetail | null>(null);
+  const [factPack, setFactPack] = useState<FactPack | null>(null);
+  const [factPackSelection, setFactPackSelection] = useState<string[]>([]);
+  const [factPackPending, setFactPackPending] = useState(false);
+  const [factPackError, setFactPackError] = useState('');
   const [publishJobId, setPublishJobId] = useState<number | null>(null);
   const [blogInspection, setBlogInspection] = useState<BlogParse | null>(null);
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
@@ -81,6 +88,10 @@ export default function App() {
   const [risingResult, setRisingResult] = useState<RisingResponse | null>(null);
   const [risingPending, setRisingPending] = useState(false);
   const [risingError, setRisingError] = useState('');
+  const [resumeError, setResumeError] = useState('');
+  const [resumePending, setResumePending] = useState(false);
+  const [publicationPending, setPublicationPending] = useState(false);
+  const [publicationError, setPublicationError] = useState('');
   const suggestionAbort = useRef<AbortController | null>(null);
   const analysisEpoch = useRef(0);
   const draftEpoch = useRef(0);
@@ -104,6 +115,20 @@ export default function App() {
     enabled: settings.loaded && !!settings.token,
     refetchInterval: 30_000,
   });
+  const recentDrafts = useQuery({
+    queryKey: ['recent-drafts', settings.coreUrl, settings.token],
+    queryFn: () => client.listDrafts({ limit: 3 }),
+    enabled: settings.loaded && !!settings.token && handshake.isSuccess,
+  });
+
+  useEffect(() => {
+    if (!handshake.isSuccess) return;
+    const params = new URLSearchParams(window.location.search);
+    const draftId = Number(params.get('draft_id'));
+    if (!Number.isInteger(draftId) || draftId < 1 || draft?.draft_id === draftId) return;
+    const jobId = Number(params.get('job_id'));
+    void resumeDraft(draftId, Number.isInteger(jobId) && jobId > 0 ? jobId : null);
+  }, [handshake.isSuccess]);
 
   const suggestions = useMemo(
     () => mergeSuggestions(recentSuggestions(keyword, recentKeywords), providerSuggestions),
@@ -184,15 +209,19 @@ export default function App() {
       mode: DraftGenerationMode;
       analysis: AnalyzeResponse;
       requestId: number;
+      factPackId: number | null;
+      factPackVersion: number | null;
     }
   >({
-    mutationFn: async ({ planItem, mode, analysis }) => {
+    mutationFn: async ({ planItem, mode, analysis, factPackId, factPackVersion }) => {
       const created = await client.createDraft({
         keyword: analysis.keyword,
         snapshot_id: analysis.snapshot_id,
         plan_item: planItem,
         questions: analysis.questions.filter((q) => q.kind === 'question').map((q) => q.text),
         generation_mode: mode,
+        fact_pack_id: factPackId,
+        fact_pack_version: factPackVersion,
       });
       return client.getDraft(created.draft_id);
     },
@@ -200,6 +229,7 @@ export default function App() {
       if (variables.requestId === draftEpoch.current) {
         setDraft(data);
         setSectionTab('draft');
+        void recentDrafts.refetch();
       }
     },
   });
@@ -214,7 +244,10 @@ export default function App() {
       return client.getDraft(draftId);
     },
     onSuccess: (data, variables) => {
-      if (variables.requestId === draftEpoch.current) setDraft(data);
+      if (variables.requestId === draftEpoch.current) {
+        setDraft(data);
+        void recentDrafts.refetch();
+      }
     },
   });
 
@@ -249,6 +282,9 @@ export default function App() {
     startPublishJob.reset();
     setResult(null);
     setDraft(null);
+    setFactPack(null);
+    setFactPackSelection([]);
+    setFactPackError('');
     setPublishJobId(null);
     setPreflight(null);
     setSensitiveKeyword(false);
@@ -328,7 +364,8 @@ export default function App() {
   function openWorkspace() {
     if (!result) return;
     const sidepanelUrl = browser.runtime.getURL('/sidepanel.html');
-    const url = `${sidepanelUrl.slice(0, sidepanelUrl.lastIndexOf('/') + 1)}research.html?keyword=${encodeURIComponent(result.keyword)}&snapshot_id=${result.snapshot_id}`;
+    const factParam = factPack ? `&fact_pack_id=${factPack.fact_pack_id}` : '';
+    const url = `${sidepanelUrl.slice(0, sidepanelUrl.lastIndexOf('/') + 1)}research.html?keyword=${encodeURIComponent(result.keyword)}&snapshot_id=${result.snapshot_id}${factParam}`;
     void browser.tabs.create({ url });
   }
 
@@ -371,7 +408,105 @@ export default function App() {
   function runCreateDraft(planItem: PlanItem, mode: DraftGenerationMode) {
     if (!result) return;
     const requestId = ++draftEpoch.current;
-    createDraft.mutate({ planItem, mode, analysis: result, requestId });
+    const approved = factPack?.latest_status === 'approved' ? factPack : null;
+    createDraft.mutate({
+      planItem,
+      mode,
+      analysis: result,
+      requestId,
+      factPackId: approved?.fact_pack_id ?? null,
+      factPackVersion: approved?.latest_version ?? null,
+    });
+  }
+
+  async function createFactPackFromAnalysis() {
+    if (!result || factPackPending) return;
+    setFactPackPending(true);
+    setFactPackError('');
+    try {
+      const created = await client.createFactPack(result.snapshot_id);
+      setFactPack(created);
+      setFactPackSelection(created.versions.at(-1)?.evidence.filter((item) => item.selected).map((item) => item.id) ?? []);
+    } catch (error) {
+      setFactPackError(error instanceof CoreError ? `${error.code}: ${error.message}` : '근거 브리프를 만들지 못했습니다.');
+    } finally {
+      setFactPackPending(false);
+    }
+  }
+
+  async function approveFactPack() {
+    if (!factPack || factPackPending || !factPackSelection.length) return;
+    if (!window.confirm('선택한 근거만 AI 초안의 사실 근거로 승인할까요?')) return;
+    setFactPackPending(true);
+    setFactPackError('');
+    try {
+      const updated = await client.appendFactPackVersion(factPack.fact_pack_id, factPackSelection, 'approved');
+      setFactPack(updated);
+    } catch (error) {
+      setFactPackError(error instanceof CoreError ? `${error.code}: ${error.message}` : '근거 승인을 완료하지 못했습니다.');
+    } finally {
+      setFactPackPending(false);
+    }
+  }
+
+  async function resumeDraft(draftId: number, latestJobId: number | null = null) {
+    if (resumePending) return;
+    setResumePending(true);
+    setResumeError('');
+    const requestId = ++draftEpoch.current;
+    try {
+      const detail = await client.getDraft(draftId);
+      if (requestId !== draftEpoch.current) return;
+      ++analysisEpoch.current;
+      analyze.reset();
+      createDraft.reset();
+      setResult(null);
+      setKeyword(detail.keyword);
+      setDraft(detail);
+      if (detail.fact_pack_id) {
+        try {
+          const loadedPack = await client.getFactPack(detail.fact_pack_id);
+          if (requestId !== draftEpoch.current) return;
+          setFactPack(loadedPack);
+          const linked = loadedPack.versions.find((version) => version.version === detail.fact_pack_version);
+          setFactPackSelection(linked?.evidence.filter((item) => item.selected).map((item) => item.id) ?? []);
+        } catch {
+          setFactPackError('연결된 FactPack을 불러오지 못했습니다.');
+        }
+      } else {
+        setFactPack(null);
+        setFactPackSelection([]);
+      }
+      setPublishJobId(latestJobId);
+      setSectionTab('draft');
+    } catch (error) {
+      if (requestId === draftEpoch.current) {
+        setResumeError(error instanceof CoreError ? `${error.code}: ${error.message}` : '초안을 불러오지 못했습니다.');
+      }
+    } finally {
+      if (requestId === draftEpoch.current) setResumePending(false);
+    }
+  }
+
+  async function registerPublished(input: { title: string; url: string; publishedAt: string }) {
+    if (!draft || publicationPending) return;
+    setPublicationPending(true);
+    setPublicationError('');
+    try {
+      await client.createPublishedContent({
+        draft_id: draft.draft_id,
+        canonical_url: input.url,
+        title: input.title,
+        published_at: input.publishedAt,
+        confirmed: true,
+      });
+      await recentDrafts.refetch();
+      setPublicationError('공개 콘텐츠 등록을 완료했습니다.');
+    } catch (error) {
+      setPublicationError(error instanceof CoreError ? `${error.code}: ${error.message}` : '공개 콘텐츠를 등록하지 못했습니다.');
+    } finally {
+      setPublicationPending(false);
+    }
   }
 
   async function pullCurrentSearch() {
@@ -438,6 +573,15 @@ export default function App() {
               ? '연결 확인 중…'
               : 'Local Core 연결 안 됨 (서버 실행·토큰 확인)'}
       </div>
+
+      {connected && (
+        <RecentDraftsCard
+          items={recentDrafts.data?.items ?? []}
+          loading={recentDrafts.isFetching || resumePending}
+          error={resumeError}
+          onOpen={(item) => void resumeDraft(item.draft_id, item.latest_job_id)}
+        />
+      )}
 
       {showSettings && (
         <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -646,6 +790,19 @@ export default function App() {
       )}
 
       {result && (
+        <CompactFactPackCard
+          pack={factPack}
+          selection={factPackSelection}
+          pending={factPackPending}
+          error={factPackError}
+          onCreate={() => void createFactPackFromAnalysis()}
+          onSelection={setFactPackSelection}
+          onApprove={() => void approveFactPack()}
+          onOpen={openWorkspace}
+        />
+      )}
+
+      {result && (
         <nav className="mt-3 grid grid-cols-3 rounded-lg border border-slate-200 bg-white p-1" aria-label="작업 단계">
           {([
             ['analysis', '분석'],
@@ -733,8 +890,101 @@ export default function App() {
           {sectionTab === 'draft' && !draft && <p className="mt-3 rounded bg-white p-3 text-xs text-slate-500">플랜에서 초안을 먼저 생성하세요.</p>}
         </>
       )}
+      {!result && draft && (
+        <DraftCard
+          draft={draft}
+          savingVersion={addDraftVersion.isPending}
+          versionError={addDraftVersion.error?.message ?? ''}
+          onSaveVersion={(title, body, note) =>
+            addDraftVersion.mutate({ draftId: draft.draft_id, title, body, note, requestId: draftEpoch.current })
+          }
+          startingPublish={startPublishJob.isPending}
+          publishError={startPublishJob.error?.message ?? publishJob.error?.message ?? ''}
+          publishJob={publishJob.data ?? startPublishJob.data ?? null}
+          onPublish={(blogId, tags) =>
+            startPublishJob.mutate({ draftId: draft.draft_id, blogId, tags, requestId: draftEpoch.current })
+          }
+        />
+      )}
       {blogInspection && <BlogInspectionCard inspection={blogInspection} />}
+      {draft && blogInspection?.found && (
+        <PublishedRegistrationCard
+          inspection={blogInspection}
+          pending={publicationPending}
+          message={publicationError}
+          onRegister={(input) => void registerPublished(input)}
+        />
+      )}
     </div>
+  );
+}
+
+export function CompactFactPackCard({
+  pack,
+  selection,
+  pending,
+  error,
+  onCreate,
+  onSelection,
+  onApprove,
+  onOpen,
+}: {
+  pack: FactPack | null;
+  selection: string[];
+  pending: boolean;
+  error: string;
+  onCreate: () => void;
+  onSelection: (ids: string[]) => void;
+  onApprove: () => void;
+  onOpen: () => void;
+}) {
+  const latest = pack?.versions.at(-1) ?? null;
+  return (
+    <section className="mt-3 rounded-lg border border-violet-200 bg-white p-3" aria-label="FactPack 근거 브리프">
+      <div className="flex items-center justify-between gap-2"><div><h2 className="font-semibold">FactPack 근거 브리프</h2><p className="text-[10px] text-slate-500">승인한 정규화 근거만 AI 초안에 연결합니다.</p></div>{!pack && <button className="rounded bg-violet-600 px-2 py-1 text-xs text-white disabled:opacity-40" disabled={pending} onClick={onCreate}>{pending ? '생성 중…' : '근거 만들기'}</button>}</div>
+      {latest && <><div className="mt-2 flex gap-2 text-[10px] text-slate-500"><span>#{pack?.fact_pack_id} · v{latest.version}</span><span className={latest.status === 'approved' ? 'font-semibold text-emerald-700' : 'text-amber-700'}>{latest.status === 'approved' ? '승인됨' : '검토 필요'}</span><span>{selection.length}/{latest.evidence.length} 선택</span></div>{latest.warnings.length > 0 && <p className="mt-2 rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800">{latest.warnings[0]}{latest.warnings.length > 1 ? ` 외 ${latest.warnings.length - 1}건` : ''}</p>}<div className="mt-2 max-h-36 space-y-1 overflow-auto">{latest.evidence.map((item) => <label key={item.id} className="flex gap-2 rounded bg-slate-50 px-2 py-1.5 text-xs"><input type="checkbox" checked={selection.includes(item.id)} onChange={(event) => onSelection(event.target.checked ? [...selection, item.id] : selection.filter((id) => id !== item.id))} /><span className="min-w-0 flex-1 truncate">{item.label} · {typeof item.value === 'string' ? item.value : JSON.stringify(item.value)}</span><span className="shrink-0 text-[10px] text-slate-400">{item.freshness}</span></label>)}</div><div className="mt-2 flex gap-1"><button className="flex-1 rounded border border-violet-300 px-2 py-1 text-xs text-violet-700" onClick={onOpen}>전체 검토</button><button className="flex-1 rounded bg-emerald-600 px-2 py-1 text-xs text-white disabled:opacity-40" disabled={pending || !selection.length} onClick={onApprove}>{pending ? '처리 중…' : latest.status === 'approved' ? '새 승인 버전' : '선택 근거 승인'}</button></div></>}
+      {error && <p className="mt-2 text-xs text-rose-700">{error}</p>}
+    </section>
+  );
+}
+
+export function RecentDraftsCard({
+  items,
+  loading,
+  error,
+  onOpen,
+}: {
+  items: DraftSummary[];
+  loading: boolean;
+  error: string;
+  onOpen: (item: DraftSummary) => void;
+}) {
+  if (!loading && items.length === 0 && !error) return null;
+  return (
+    <section className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3" aria-label="최근 작업 계속">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-indigo-900">최근 작업 계속</h2>
+        {loading && <span className="text-[10px] text-indigo-500">불러오는 중…</span>}
+      </div>
+      {error && <p className="mt-2 rounded bg-rose-50 px-2 py-1 text-[10px] text-rose-700">{error}</p>}
+      <div className="mt-2 space-y-1">
+        {items.map((item) => (
+          <button
+            key={item.draft_id}
+            className="flex w-full items-center gap-2 rounded bg-white px-2 py-2 text-left shadow-sm hover:bg-indigo-50"
+            onClick={() => onOpen(item)}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium">{item.title}</span>
+              <span className="block truncate text-[10px] text-slate-500">{item.keyword} · v{item.latest_version} · {item.user_status}</span>
+            </span>
+            <span className={`shrink-0 text-[10px] ${item.latest_job_status === 'failed' ? 'text-rose-600' : 'text-indigo-600'}`}>
+              {item.latest_job_status === 'failed' ? '오류 확인' : '이어쓰기'}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -805,6 +1055,7 @@ export function LandscapeCard({ result }: { result: AnalyzeResponse }) {
           <span className="rounded-full bg-violet-50 px-2 py-0.5 text-xs">광고 경쟁 {m.ad_competition}</span>
         )}
       </div>
+      {m && <div className="mt-3"><PcMobileDonut pc={m.monthly_pc_searches} mobile={m.monthly_mobile_searches} masked={m.volume_masked} compact /></div>}
       <div className="mt-2 flex flex-wrap gap-2">
         {m && <DataMeta source={m.source} collectedAt={m.collected_at} fromCache={m.from_cache} />}
         {l && <DataMeta source={l.source} collectedAt={l.collected_at} fromCache={l.from_cache} />}
@@ -1189,6 +1440,18 @@ export function DraftCard({
         </span>
       </div>
       <p className="mt-1 text-[11px] text-slate-400">본문 {body.length.toLocaleString()}자 · draft #{draft.draft_id} · 버전 {draft.versions.length}개</p>
+      {draft.fact_pack_id && (
+        <button
+          className="mt-2 rounded border border-violet-300 px-2 py-1 text-[10px] text-violet-700"
+          onClick={() => {
+            const sidepanelUrl = browser.runtime.getURL('/sidepanel.html');
+            const url = `${sidepanelUrl.slice(0, sidepanelUrl.lastIndexOf('/') + 1)}research.html?keyword=${encodeURIComponent(draft.keyword)}&snapshot_id=${draft.source_snapshot_id ?? ''}&fact_pack_id=${draft.fact_pack_id}`;
+            void browser.tabs.create({ url });
+          }}
+        >
+          연결 근거 FactPack #{draft.fact_pack_id} · v{draft.fact_pack_version} 보기
+        </button>
+      )}
       <label className="mt-2 block text-[11px] font-medium text-slate-500">제목</label>
       <input className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs" value={title} onChange={(event) => setTitle(event.target.value)} />
       <label className="mt-2 block text-[11px] font-medium text-slate-500">본문</label>
@@ -1232,6 +1495,40 @@ export function BlogInspectionCard({ inspection }: { inspection: BlogParse }) {
         <span>· 공감 {inspection.likes ?? '결측'}</span>
         <span>· 댓글 {inspection.comments ?? '결측'}</span>
       </div>
+    </section>
+  );
+}
+
+export function PublishedRegistrationCard({
+  inspection,
+  pending,
+  message,
+  onRegister,
+}: {
+  inspection: BlogParse;
+  pending: boolean;
+  message: string;
+  onRegister: (input: { title: string; url: string; publishedAt: string }) => void;
+}) {
+  const [title, setTitle] = useState(inspection.title);
+  const [url, setUrl] = useState(inspection.url ?? '');
+  return (
+    <section className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+      <h2 className="font-semibold">실제 공개 콘텐츠 등록</h2>
+      <p className="mt-1 text-[10px] text-emerald-800">현재 블로그 분석 결과를 후보로 채웠습니다. 확인 전에는 저장되지 않습니다.</p>
+      <input className="mt-2 w-full rounded border border-emerald-200 px-2 py-1 text-xs" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="공개된 글 제목" />
+      <input className="mt-1 w-full rounded border border-emerald-200 px-2 py-1 text-xs" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://blog.naver.com/..." />
+      <button
+        className="mt-2 rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
+        disabled={pending || !title.trim() || !url.trim()}
+        onClick={() => {
+          if (!window.confirm('현재 URL의 글이 실제로 공개된 것을 확인했나요? 임시저장만 된 글은 등록하지 마세요.')) return;
+          onRegister({ title, url, publishedAt: new Date().toISOString() });
+        }}
+      >
+        {pending ? '등록 중…' : '공개 사실 확인 후 등록'}
+      </button>
+      {message && <p className="mt-2 text-[10px] text-emerald-800">{message}</p>}
     </section>
   );
 }

@@ -3,15 +3,20 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DraftCard } from '../entrypoints/sidepanel/App';
+import { DraftCard, PublishedRegistrationCard } from '../entrypoints/sidepanel/App';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const draft: DraftDetail = {
   draft_id: 11,
+  keyword: '키워드',
   blog_type: 'HOWTO',
   title: '최신 제목',
   source_snapshot_id: 7,
+  user_status: 'editing',
+  fact_pack_id: null,
+  fact_pack_version: null,
+  created_at: '2026-09-01T00:00:00Z',
   plan: {
     order: 1,
     title: '계획 제목',
@@ -27,8 +32,8 @@ const draft: DraftDetail = {
   model: '',
   prompt_version: 'v1',
   versions: [
-    { version: 1, title: '원본 제목', body: '원본 본문', note: 'V1 원본' },
-    { version: 2, title: '최신 제목', body: '최신 본문', note: '사실확인' },
+    { version: 1, title: '원본 제목', body: '원본 본문', note: 'V1 원본', created_at: '2026-09-01T00:00:00Z' },
+    { version: 2, title: '최신 제목', body: '최신 본문', note: '사실확인', created_at: '2026-09-02T00:00:00Z' },
   ],
 };
 
@@ -116,5 +121,26 @@ describe('DraftCard', () => {
     await act(async () => setInput(title, '저장 전 제목'));
     expect(button(container, '최신 버전 임시저장 시작').disabled).toBe(true);
     expect(container.textContent).toContain('새 버전으로 저장해야');
+  });
+
+  it('does not register a public post until the user confirms it', async () => {
+    const onRegister = vi.fn();
+    await act(async () => root.render(
+      <PublishedRegistrationCard
+        inspection={{ ok: true, found: true, title: '공개 글', posted_at: '2026.09.03', body_chars: 100, image_count: 0, video_count: 0, link_count: 0, likes: null, comments: null, url: 'https://blog.naver.com/test/1' }}
+        pending={false}
+        message=""
+        onRegister={onRegister}
+      />,
+    ));
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+    await act(async () => button(container, '공개 사실 확인 후 등록').click());
+    expect(onRegister).not.toHaveBeenCalled();
+    vi.mocked(window.confirm).mockReturnValueOnce(true);
+    await act(async () => button(container, '공개 사실 확인 후 등록').click());
+    expect(onRegister).toHaveBeenCalledWith(expect.objectContaining({
+      title: '공개 글',
+      url: 'https://blog.naver.com/test/1',
+    }));
   });
 });

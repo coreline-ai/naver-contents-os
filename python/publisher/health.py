@@ -13,6 +13,8 @@ from publisher.selectors import (
     SMARTEDITOR_SELECTORS,
 )
 
+EDITOR_LOAD_TIMEOUT_MS = 30_000
+
 
 @dataclass
 class HealthReport:
@@ -34,6 +36,8 @@ def run_health_check(
     page: PageLike,
     blog_id: str,
     selectors: dict[str, list[str]] | None = None,
+    *,
+    require_tags: bool = True,
 ) -> HealthReport:
     selectors = selectors or SMARTEDITOR_SELECTORS
     report = HealthReport()
@@ -47,6 +51,11 @@ def run_health_check(
         for name, _key in HEALTH_CHECKS:
             report.add(name, False, "skipped: not logged in")
         return report
+
+    # `domcontentloaded` only means the editor shell arrived. SmartEditor keeps a
+    # full-screen "글을 불러오고 있습니다" layer up while its editable canvas is
+    # mounted asynchronously, so selector checks must wait for the real root.
+    page.wait_for_any(selectors["editor_root"], EDITOR_LOAD_TIMEOUT_MS)
 
     help_close = pick_selector(page, selectors["help_close"], require_enabled=True)
     if help_close is not None:
@@ -64,20 +73,21 @@ def run_health_check(
         )
         report.add(name, found is not None, found or f"no candidate matched: {key}")
 
-    publish_button = pick_selector(page, selectors["publish_open_button"], require_enabled=True)
-    if publish_button is None:
-        report.add("tag_input_reachable", False, "publish layer button unavailable")
-    else:
-        try:
-            page.click(publish_button)
-            tag_input = pick_selector(page, selectors["tag_input"], require_editable=True)
-            report.add(
-                "tag_input_reachable",
-                tag_input is not None,
-                tag_input or "tag input unavailable after opening publish layer",
-            )
-        except Exception as exc:  # noqa: BLE001 - converted into a failed health gate
-            report.add("tag_input_reachable", False, f"publish layer check failed: {type(exc).__name__}")
-        finally:
-            page.press("Escape")
+    if require_tags:
+        publish_button = pick_selector(page, selectors["publish_open_button"], require_enabled=True)
+        if publish_button is None:
+            report.add("tag_input_reachable", False, "publish layer button unavailable")
+        else:
+            try:
+                page.click(publish_button)
+                tag_input = pick_selector(page, selectors["tag_input"], require_editable=True)
+                report.add(
+                    "tag_input_reachable",
+                    tag_input is not None,
+                    tag_input or "tag input unavailable after opening publish layer",
+                )
+            except Exception as exc:  # noqa: BLE001 - converted into a failed health gate
+                report.add("tag_input_reachable", False, f"publish layer check failed: {type(exc).__name__}")
+            finally:
+                page.press("Escape")
     return report

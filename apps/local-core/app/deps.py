@@ -7,7 +7,11 @@ from app.config import get_settings
 from app.db import make_engine, make_session_factory
 from app.services.analyze import AnalyzeService
 from app.services.drafts import DraftService
+from app.services.factpacks import FactPackService
+from app.services.intent import IntentBoardService
+from app.services.work import TodayWorkService
 from app.services.publishing import PublishService
+from app.services.published import PublishedContentService
 from app.services.research import ResearchService
 from app.stores import SqlCacheStore, SqlUsageStore
 from providers.gateway import Gateway, ProviderPolicy
@@ -168,6 +172,26 @@ def get_publish_service() -> PublishService:
     return PublishService(get_session_factory())
 
 
+@lru_cache
+def get_published_content_service() -> PublishedContentService:
+    return PublishedContentService(get_session_factory())
+
+
+@lru_cache
+def get_fact_pack_service() -> FactPackService:
+    return FactPackService(get_session_factory())
+
+
+@lru_cache
+def get_intent_board_service() -> IntentBoardService:
+    return IntentBoardService(get_session_factory())
+
+
+@lru_cache
+def get_today_work_service() -> TodayWorkService:
+    return TodayWorkService(get_session_factory())
+
+
 def reset_caches() -> None:
     """Test helper: drop every cached singleton (settings included)."""
     get_settings.cache_clear()
@@ -177,3 +201,7 @@ def reset_caches() -> None:
     get_research_service.cache_clear()
     get_draft_service.cache_clear()
     get_publish_service.cache_clear()
+    get_published_content_service.cache_clear()
+    get_fact_pack_service.cache_clear()
+    get_intent_board_service.cache_clear()
+    get_today_work_service.cache_clear()

@@ -10,9 +10,15 @@ import type {
   DraftCreateRequest,
   DraftCreateResponse,
   DraftDetail,
+  DraftListResponse,
+  DraftUserStatus,
+  FactPack,
   HealthResponse,
+  IntentBoardResponse,
   KeywordSuggestionResponse,
   LatestRisingResponse,
+  PublishedContent,
+  PublishedContentListResponse,
   PublishJob,
   PreflightResponse,
   ResearchGraphResponse,
@@ -20,6 +26,7 @@ import type {
   RisingResponse,
   SerpObservation,
   SpecializedResponse,
+  TodayWorkResponse,
   WatchlistItem,
   WatchlistResponse,
 } from '@ncos/contracts';
@@ -179,6 +186,10 @@ export class CoreClient {
     });
   }
 
+  todayWork(limit = 5): Promise<TodayWorkResponse> {
+    return this.request<TodayWorkResponse>(`/v1/work/today?limit=${limit}`);
+  }
+
   createDraft(input: DraftCreateRequest): Promise<DraftCreateResponse> {
     return this.request<DraftCreateResponse>('/v1/drafts', {
       method: 'POST',
@@ -186,8 +197,91 @@ export class CoreClient {
     });
   }
 
+  createFactPack(snapshotId: number, draftId?: number | null): Promise<FactPack> {
+    return this.request<FactPack>('/v1/factpacks', {
+      method: 'POST',
+      body: JSON.stringify({ snapshot_id: snapshotId, draft_id: draftId ?? null }),
+    });
+  }
+
+  getFactPack(factPackId: number): Promise<FactPack> {
+    return this.request<FactPack>(`/v1/factpacks/${factPackId}`);
+  }
+
+  getIntentBoard(snapshotId: number): Promise<IntentBoardResponse> {
+    return this.request<IntentBoardResponse>(`/v1/snapshots/${snapshotId}/intent-board`);
+  }
+
+  appendFactPackVersion(
+    factPackId: number,
+    selectedEvidenceIds: string[],
+    status: 'draft' | 'approved',
+  ): Promise<FactPack> {
+    return this.request<FactPack>(`/v1/factpacks/${factPackId}/versions`, {
+      method: 'POST',
+      body: JSON.stringify({ selected_evidence_ids: selectedEvidenceIds, status }),
+    });
+  }
+
   getDraft(draftId: number): Promise<DraftDetail> {
     return this.request<DraftDetail>(`/v1/drafts/${draftId}`);
+  }
+
+  listDrafts(input: {
+    query?: string;
+    status?: DraftUserStatus;
+    cursor?: string;
+    limit?: number;
+  } = {}): Promise<DraftListResponse> {
+    const query = new URLSearchParams();
+    if (input.query) query.set('query', input.query);
+    if (input.status) query.set('status', input.status);
+    if (input.cursor) query.set('cursor', input.cursor);
+    if (input.limit) query.set('limit', String(input.limit));
+    const suffix = query.size ? `?${query.toString()}` : '';
+    return this.request<DraftListResponse>(`/v1/drafts${suffix}`);
+  }
+
+  updateDraftStatus(
+    draftId: number,
+    status: DraftUserStatus,
+  ): Promise<{ draft_id: number; user_status: DraftUserStatus }> {
+    return this.request(`/v1/drafts/${draftId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    });
+  }
+
+  createPublishedContent(input: {
+    draft_id?: number | null;
+    keyword?: string;
+    canonical_url: string;
+    title: string;
+    published_at: string;
+    confirmed: boolean;
+  }): Promise<PublishedContent> {
+    return this.request<PublishedContent>('/v1/published-contents', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  listPublishedContents(query = '', includeArchived = false): Promise<PublishedContentListResponse> {
+    const params = new URLSearchParams();
+    if (query) params.set('query', query);
+    if (includeArchived) params.set('include_archived', 'true');
+    const suffix = params.size ? `?${params.toString()}` : '';
+    return this.request<PublishedContentListResponse>(`/v1/published-contents${suffix}`);
+  }
+
+  updatePublishedContent(
+    contentId: number,
+    input: { title?: string; published_at?: string; archived?: boolean },
+  ): Promise<PublishedContent> {
+    return this.request<PublishedContent>(`/v1/published-contents/${contentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    });
   }
 
   addDraftVersion(

@@ -2,19 +2,28 @@ import type {
   AdPerformanceResponse,
   AudienceResponse,
   CommercialResponse,
+  DraftSummary,
+  DraftUserStatus,
+  FactPack,
+  IntentBoardResponse,
+  SearchIntent,
+  PublishedContent,
   ResearchGraphNode,
   ResearchGraphResponse,
   RisingMode,
   RisingResponse,
   SpecializedResponse,
+  TodayWorkItem,
   WatchlistItem,
 } from '@ncos/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { browser } from 'wxt/browser';
+import { PcMobileDonut } from '~/components/PcMobileDonut';
 import { CoreClient, CoreError } from '~/lib/core';
 import { useSettings } from '~/lib/settings';
 
-type WorkspaceView = 'graph' | 'rising' | 'watchlist' | 'specialized' | 'performance';
+type WorkspaceView = 'work' | 'drafts' | 'published' | 'facts' | 'intent' | 'graph' | 'rising' | 'watchlist' | 'specialized' | 'performance';
 
 const COLORS = ['#059669', '#2563eb', '#7c3aed', '#db2777', '#d97706', '#0891b2', '#475569'];
 
@@ -46,7 +55,9 @@ export default function App() {
   const params = new URLSearchParams(window.location.search);
   const [keyword, setKeyword] = useState(params.get('keyword') ?? '');
   const [snapshotId, setSnapshotId] = useState<number | null>(Number(params.get('snapshot_id')) || null);
-  const [view, setView] = useState<WorkspaceView>('graph');
+  const initialFactPackId = Number(params.get('fact_pack_id')) || null;
+  const [view, setView] = useState<WorkspaceView>(initialFactPackId ? 'facts' : 'work');
+  const [factPack, setFactPack] = useState<FactPack | null>(null);
   const [graph, setGraph] = useState<ResearchGraphResponse | null>(null);
   const [selectedId, setSelectedId] = useState('');
   const [minimumVolume, setMinimumVolume] = useState(0);
@@ -61,6 +72,10 @@ export default function App() {
   const [risingRegion, setRisingRegion] = useState('');
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
+  const [draftQuery, setDraftQuery] = useState('');
+  const [draftStatus, setDraftStatus] = useState<DraftUserStatus | ''>('');
+  const [draftCursor, setDraftCursor] = useState<string | undefined>();
+  const [publishedQuery, setPublishedQuery] = useState('');
 
   useEffect(() => { void settings.load(); }, []);
   const client = useMemo(() => new CoreClient(settings.coreUrl, settings.token), [settings.coreUrl, settings.token]);
@@ -74,6 +89,45 @@ export default function App() {
     queryFn: () => client.listWatchlist(),
     enabled: settings.loaded && !!settings.token && view === 'watchlist',
   });
+  const drafts = useQuery({
+    queryKey: ['draft-workbox', settings.coreUrl, settings.token, draftQuery, draftStatus, draftCursor],
+    queryFn: () => client.listDrafts({
+      query: draftQuery,
+      status: draftStatus || undefined,
+      cursor: draftCursor,
+      limit: 20,
+    }),
+    enabled: settings.loaded && !!settings.token && (view === 'drafts' || view === 'work'),
+  });
+  const todayWork = useQuery({
+    queryKey: ['today-work', settings.coreUrl, settings.token],
+    queryFn: () => client.todayWork(5),
+    enabled: settings.loaded && !!settings.token && view === 'work',
+  });
+  const publications = useQuery({
+    queryKey: ['published-contents', settings.coreUrl, settings.token, publishedQuery],
+    queryFn: () => client.listPublishedContents(publishedQuery, true),
+    enabled: settings.loaded && !!settings.token && view === 'published',
+  });
+  const intentBoard = useQuery({
+    queryKey: ['intent-board', settings.coreUrl, settings.token, snapshotId],
+    queryFn: () => client.getIntentBoard(snapshotId!),
+    enabled: settings.loaded && !!settings.token && !!snapshotId && view === 'intent',
+  });
+
+  useEffect(() => {
+    if (!initialFactPackId || !settings.token) return;
+    let active = true;
+    void client.getFactPack(initialFactPackId)
+      .then((pack) => {
+        if (!active) return;
+        setFactPack(pack);
+        setKeyword(pack.keyword);
+        setSnapshotId(pack.snapshot_id);
+      })
+      .catch((error) => { if (active) setNotice(errorText(error)); });
+    return () => { active = false; };
+  }, [client, initialFactPackId, settings.token]);
 
   useEffect(() => {
     if (view !== 'rising' || !settings.token) return;
@@ -150,6 +204,148 @@ export default function App() {
     });
   }
 
+  function openDraft(summary: DraftSummary) {
+    const url = browser.runtime.getURL(`/sidepanel.html?draft_id=${summary.draft_id}`);
+    void browser.tabs.create({ url });
+  }
+
+  async function changeDraftStatus(draftId: number, status: DraftUserStatus) {
+    await run('draft-status', async () => {
+      await client.updateDraftStatus(draftId, status);
+      await drafts.refetch();
+      await todayWork.refetch();
+    });
+  }
+
+  async function registerPublished(summary: DraftSummary) {
+    const canonicalUrl = window.prompt('실제로 공개된 네이버 글 URL을 입력하세요.');
+    if (!canonicalUrl) return;
+    const title = window.prompt('공개된 글 제목을 확인하세요.', summary.title);
+    if (!title) return;
+    if (!window.confirm('이 글이 네이버에서 실제 공개된 것을 확인했나요? 임시저장 상태만으로는 등록하면 안 됩니다.')) return;
+    await run('publish-register', async () => {
+      await client.createPublishedContent({
+        draft_id: summary.draft_id,
+        canonical_url: canonicalUrl,
+        title,
+        published_at: new Date().toISOString(),
+        confirmed: true,
+      });
+      await drafts.refetch();
+      await todayWork.refetch();
+      setNotice('실제 공개 콘텐츠로 등록했습니다.');
+    });
+  }
+
+  async function archivePublished(contentId: number, archived: boolean) {
+    await run('publish-archive', async () => {
+      await client.updatePublishedContent(contentId, { archived });
+      await publications.refetch();
+    });
+  }
+
+  async function createFactPack() {
+    if (!snapshotId) { setNotice('먼저 키워드를 분석해 snapshot을 만드세요.'); return; }
+    await run('fact-create', async () => {
+      const created = await client.createFactPack(snapshotId);
+      setFactPack(created);
+      setNotice('현재 snapshot의 정규화 근거로 FactPack을 만들었습니다. 외부 호출은 발생하지 않았습니다.');
+    });
+  }
+
+  async function saveFactPack(selectedEvidenceIds: string[], status: 'draft' | 'approved') {
+    if (!factPack) return;
+    if (status === 'approved' && !window.confirm('선택한 근거만 초안 작성에 사용하도록 승인할까요?')) return;
+    await run('fact-save', async () => {
+      const updated = await client.appendFactPackVersion(factPack.fact_pack_id, selectedEvidenceIds, status);
+      setFactPack(updated);
+      setNotice(status === 'approved' ? `FactPack v${updated.latest_version}을 승인했습니다.` : `FactPack v${updated.latest_version}을 저장했습니다.`);
+    });
+  }
+
+  async function useIntentKeyword(nextKeyword: string, purpose: 'analyze' | 'plan') {
+    await run(`intent-${purpose}`, async () => {
+      const analyzed = await client.analyze(nextKeyword, null);
+      setKeyword(analyzed.keyword);
+      setSnapshotId(analyzed.snapshot_id);
+      setGraph(null);
+      setSelectedId('');
+      setView('graph');
+      setNotice(purpose === 'plan'
+        ? `${analyzed.keyword}을 플랜 후보로 선택하고 snapshot #${analyzed.snapshot_id}을 만들었습니다.`
+        : `${analyzed.keyword} 재분석을 완료했습니다. 새 snapshot #${analyzed.snapshot_id}`);
+    });
+  }
+
+  async function addIntentKeywordToWatchlist(nextKeyword: string) {
+    await run('intent-watch', async () => {
+      await client.addWatchlist(nextKeyword);
+      setNotice(`${nextKeyword}을 Watchlist에 추가했습니다.`);
+    });
+  }
+
+  function openIntentContent(url: string | null) {
+    const safe = safeExternalUrl(url);
+    if (safe === '#') { setNotice('열 수 있는 공개 콘텐츠 URL이 없습니다.'); return; }
+    void browser.tabs.create({ url: safe });
+  }
+
+  function openTodayDraft(item: TodayWorkItem) {
+    if (!item.draft_id) return;
+    const params = new URLSearchParams({ draft_id: String(item.draft_id) });
+    if (item.publish_job_id) params.set('job_id', String(item.publish_job_id));
+    void browser.tabs.create({ url: browser.runtime.getURL(`/sidepanel.html?${params.toString()}`) });
+  }
+
+  async function registerTodayPublication(item: TodayWorkItem) {
+    if (!item.draft_id) return;
+    const canonicalUrl = window.prompt('실제로 공개된 네이버 글 URL을 입력하세요.');
+    if (!canonicalUrl) return;
+    const title = window.prompt('공개된 글 제목을 확인하세요.', item.title);
+    if (!title) return;
+    if (!window.confirm('이 글이 네이버에서 실제 공개된 것을 확인했나요?')) return;
+    await run('today-register', async () => {
+      await client.createPublishedContent({
+        draft_id: item.draft_id,
+        canonical_url: canonicalUrl,
+        title,
+        published_at: new Date().toISOString(),
+        confirmed: true,
+      });
+      await Promise.all([todayWork.refetch(), drafts.refetch()]);
+      setNotice('실제 공개 콘텐츠로 등록했습니다.');
+    });
+  }
+
+  async function handleTodayAction(item: TodayWorkItem) {
+    if (item.action === 'inspect_error' || item.action === 'resume_draft') {
+      openTodayDraft(item);
+      return;
+    }
+    if (item.action === 'register_publication') {
+      await registerTodayPublication(item);
+      return;
+    }
+    if (item.action === 'refresh_data') {
+      if (item.source_type === 'watchlist') {
+        if (!window.confirm('선택한 Watchlist 키워드의 SearchAd·Trend를 갱신할까요?')) return;
+        await run('today-refresh', async () => {
+          await client.refreshWatchlist([item.source_id]);
+          await todayWork.refetch();
+        });
+      } else if (item.source_type === 'ad_performance') {
+        setView('performance');
+        setNotice('광고 성과 기간을 확인한 뒤 조회 버튼을 누르세요. 자동 조회하지 않았습니다.');
+      } else {
+        setKeyword(item.keyword);
+        setView('rising');
+        setNotice('급상승 탭에서 최신 수집 버튼을 누르세요. 자동 수집하지 않았습니다.');
+      }
+      return;
+    }
+    await useIntentKeyword(item.keyword, 'analyze');
+  }
+
   const providerEntries = Object.entries(capabilities.data?.providers ?? {});
   const searchadBlocked = capabilities.data?.providers.searchad?.quota?.blocked ?? false;
   const trendBlocked = capabilities.data?.providers.hub_trend?.quota?.blocked ?? false;
@@ -179,6 +375,11 @@ export default function App() {
         <aside className="border-r border-slate-200 bg-white p-3">
           <nav className="space-y-1">
             {([
+              ['work', '오늘의 작업'],
+              ['drafts', '콘텐츠 작업함'],
+              ['published', '발행 콘텐츠'],
+              ['facts', '근거 브리프'],
+              ['intent', '의도별 키워드'],
               ['graph', '키워드 맵'],
               ['rising', '급상승'],
               ['watchlist', 'Watchlist'],
@@ -204,6 +405,89 @@ export default function App() {
             ) : null)}
           </div>
         </aside>
+
+        {view === 'work' && (
+          <section className="min-w-0 p-4">
+            <TodayWorkCards
+              items={todayWork.data?.items ?? []}
+              loading={todayWork.isFetching}
+              error={todayWork.isError ? errorText(todayWork.error) : ''}
+              busy={busy}
+              onAction={(item) => void handleTodayAction(item)}
+              onAnalyze={() => setView('graph')}
+              onDrafts={() => setView('drafts')}
+              onRetry={() => void todayWork.refetch()}
+            />
+            <div className="mt-3 rounded-xl border border-slate-200 bg-white p-5">
+              <h2 className="text-base font-bold">최근 콘텐츠 작업</h2>
+              <p className="mt-1 text-xs text-slate-500">본문을 읽지 않고 최신 작업 요약만 표시합니다.</p>
+              <DraftWorkbox
+                items={(drafts.data?.items ?? []).slice(0, 5)}
+                loading={drafts.isFetching}
+                error={drafts.isError ? errorText(drafts.error) : ''}
+                onRetry={() => void drafts.refetch()}
+                busy={busy}
+                compact
+                onOpen={openDraft}
+                onStatus={(id, status) => void changeDraftStatus(id, status)}
+                onRegister={(item) => void registerPublished(item)}
+              />
+            </div>
+          </section>
+        )}
+        {view === 'drafts' && (
+          <DraftWorkbox
+            items={drafts.data?.items ?? []}
+            loading={drafts.isFetching}
+            error={drafts.isError ? errorText(drafts.error) : ''}
+            onRetry={() => void drafts.refetch()}
+            busy={busy}
+            query={draftQuery}
+            status={draftStatus}
+            nextCursor={drafts.data?.next_cursor ?? null}
+            onQuery={(value) => { setDraftQuery(value); setDraftCursor(undefined); }}
+            onStatusFilter={(value) => { setDraftStatus(value); setDraftCursor(undefined); }}
+            onNext={(value) => setDraftCursor(value)}
+            onReset={() => setDraftCursor(undefined)}
+            onOpen={openDraft}
+            onStatus={(id, status) => void changeDraftStatus(id, status)}
+            onRegister={(item) => void registerPublished(item)}
+          />
+        )}
+        {view === 'published' && (
+          <PublishedRegistry
+            items={publications.data?.items ?? []}
+            loading={publications.isFetching}
+            error={publications.isError ? errorText(publications.error) : ''}
+            query={publishedQuery}
+            onQuery={setPublishedQuery}
+            onArchive={(id, archived) => void archivePublished(id, archived)}
+            onRetry={() => void publications.refetch()}
+          />
+        )}
+        {view === 'facts' && (
+          <FactPackWorkspace
+            pack={factPack}
+            snapshotId={snapshotId}
+            busy={busy}
+            onCreate={() => void createFactPack()}
+            onSave={(ids, status) => void saveFactPack(ids, status)}
+          />
+        )}
+        {view === 'intent' && (
+          <IntentBoardWorkspace
+            board={intentBoard.data ?? null}
+            loading={intentBoard.isFetching}
+            error={intentBoard.isError ? errorText(intentBoard.error) : ''}
+            snapshotId={snapshotId}
+            busy={busy}
+            onAnalyze={(value) => void useIntentKeyword(value, 'analyze')}
+            onWatch={(value) => void addIntentKeywordToWatchlist(value)}
+            onPlan={(value) => void useIntentKeyword(value, 'plan')}
+            onOpen={openIntentContent}
+            onRetry={() => void intentBoard.refetch()}
+          />
+        )}
 
         {view === 'graph' && (
           <GraphWorkspace
@@ -281,6 +565,337 @@ export default function App() {
   );
 }
 
+const TODAY_ACTION_LABEL: Record<TodayWorkItem['action'], string> = {
+  inspect_error: '오류 확인',
+  resume_draft: '이어쓰기',
+  register_publication: '발행 등록',
+  refresh_data: '데이터 갱신',
+  open_analysis: '분석 열기',
+};
+
+export function TodayWorkCards({
+  items,
+  loading,
+  error = '',
+  busy,
+  onAction,
+  onAnalyze,
+  onDrafts,
+  onRetry = () => undefined,
+}: {
+  items: TodayWorkItem[];
+  loading: boolean;
+  error?: string;
+  busy: string;
+  onAction: (item: TodayWorkItem) => void;
+  onAnalyze: () => void;
+  onDrafts: () => void;
+  onRetry?: () => void;
+}) {
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5" aria-label="오늘의 추천 작업">
+      <div className="flex items-start justify-between gap-3"><div><h2 className="text-lg font-bold">오늘의 추천 작업</h2><p className="mt-1 text-xs text-slate-500">로컬 DB만 확인하며 사용자 동작을 자동 실행하지 않습니다.</p></div><span className="rounded-full bg-indigo-50 px-2 py-1 text-[10px] text-indigo-700">최대 5개</span></div>
+      {loading && items.length === 0 && <p className="mt-4 text-xs text-slate-500">추천 작업을 계산하는 중…</p>}
+      {error && <p className="mt-4 rounded bg-rose-50 p-3 text-xs text-rose-700">{error} <button className="ml-2 underline" onClick={onRetry}>다시 시도</button></p>}
+      {!loading && !error && items.length === 0 && <div className="mt-4 rounded-lg bg-emerald-50 p-4"><b className="text-sm text-emerald-800">지금 처리할 필수 작업이 없습니다.</b><p className="mt-1 text-xs text-emerald-700">새 키워드를 분석하거나 전체 작업함을 확인할 수 있습니다.</p><div className="mt-3 flex gap-2"><button className="rounded bg-indigo-600 px-3 py-1.5 text-xs text-white" onClick={onAnalyze}>수동 분석</button><button className="rounded border border-emerald-300 px-3 py-1.5 text-xs text-emerald-800" onClick={onDrafts}>작업함 열기</button></div></div>}
+      <div className="mt-4 grid gap-2 lg:grid-cols-2">
+        {items.map((item) => <article key={item.id} className="rounded-lg border border-slate-200 p-3"><div className="flex items-start gap-2"><span className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] text-white">P{item.priority}</span><div className="min-w-0 flex-1"><p className="text-[10px] text-slate-400">{item.keyword} · {item.source_type}{item.stale ? ' · stale' : ''}</p><h3 className="mt-0.5 truncate font-semibold">{item.title}</h3><p className="mt-1 text-xs text-slate-600">{item.reason}</p></div></div><button className={`mt-3 w-full rounded px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40 ${item.action === 'inspect_error' ? 'bg-rose-600' : item.action === 'register_publication' ? 'bg-emerald-600' : item.action === 'refresh_data' ? 'bg-amber-600' : 'bg-indigo-600'}`} disabled={!!busy} onClick={() => onAction(item)}>{TODAY_ACTION_LABEL[item.action]}</button></article>)}
+      </div>
+    </section>
+  );
+}
+
+export function PublishedRegistry({
+  items,
+  loading,
+  error = '',
+  query,
+  onQuery,
+  onArchive,
+  onRetry = () => undefined,
+}: {
+  items: PublishedContent[];
+  loading: boolean;
+  error?: string;
+  query: string;
+  onQuery: (value: string) => void;
+  onArchive: (contentId: number, archived: boolean) => void;
+  onRetry?: () => void;
+}) {
+  return (
+    <section className="min-w-0 p-4" aria-label="발행 콘텐츠 등록부">
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div>
+            <h2 className="text-lg font-bold">발행 콘텐츠 등록부</h2>
+            <p className="text-xs text-slate-500">사용자가 실제 공개를 확인한 글만 표시합니다. 임시저장과 별개입니다.</p>
+          </div>
+          <input className="ml-auto min-w-56 rounded-lg border border-slate-300 px-3 py-2 text-xs" value={query} onChange={(event) => onQuery(event.target.value)} placeholder="제목·키워드·URL 검색" />
+        </div>
+      </div>
+      <div className="mt-3 space-y-2">
+        {error && <p className="rounded-xl bg-rose-50 p-4 text-xs text-rose-700">{error} <button className="ml-2 underline" onClick={onRetry}>다시 시도</button></p>}
+        {loading && items.length === 0 && <p className="rounded-xl bg-white p-4 text-xs text-slate-500">발행 콘텐츠를 불러오는 중…</p>}
+        {!loading && !error && items.length === 0 && <p className="rounded-xl bg-white p-4 text-xs text-slate-500">등록된 공개 콘텐츠가 없습니다.</p>}
+        {items.map((item) => (
+          <article key={item.id} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex gap-2 text-[10px] text-slate-500"><span>{item.keyword}</span><span>{item.state}</span><span>{new Date(item.published_at).toLocaleDateString()}</span></div>
+                <h3 className="mt-1 font-semibold">{item.title}</h3>
+                <a className="mt-1 block truncate text-xs text-indigo-600 underline" href={safeExternalUrl(item.canonical_url)} target="_blank" rel="noreferrer">{item.canonical_url}</a>
+              </div>
+              <button className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={() => onArchive(item.id, item.state !== 'archived')}>
+                {item.state === 'archived' ? '복원' : '보관'}
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function factValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+export function FactPackWorkspace({
+  pack,
+  snapshotId,
+  busy,
+  onCreate,
+  onSave,
+}: {
+  pack: FactPack | null;
+  snapshotId: number | null;
+  busy: string;
+  onCreate: () => void;
+  onSave: (selectedEvidenceIds: string[], status: 'draft' | 'approved') => void;
+}) {
+  const latest = pack?.versions.at(-1) ?? null;
+  const [selected, setSelected] = useState<string[]>([]);
+  useEffect(() => {
+    setSelected(latest?.evidence.filter((item) => item.selected).map((item) => item.id) ?? []);
+  }, [latest?.version, pack?.fact_pack_id]);
+
+  return (
+    <section className="min-w-0 p-4" aria-label="FactPack 근거 브리프">
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <div>
+            <h2 className="text-lg font-bold">FactPack 근거 브리프</h2>
+            <p className="text-xs text-slate-500">저장된 snapshot만 읽습니다. 선택 후 승인한 근거만 AI 초안에 전달됩니다.</p>
+          </div>
+          {!pack && <button className="ml-auto rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40" disabled={!snapshotId || busy === 'fact-create'} onClick={onCreate}>{busy === 'fact-create' ? '생성 중…' : '현재 snapshot으로 만들기'}</button>}
+          {pack && <div className="ml-auto flex gap-2"><button className="rounded border border-slate-300 px-3 py-2 text-xs disabled:opacity-40" disabled={busy === 'fact-save'} onClick={() => onSave(selected, 'draft')}>선택 저장</button><button className="rounded bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40" disabled={!selected.length || busy === 'fact-save'} onClick={() => onSave(selected, 'approved')}>선택 근거 승인</button></div>}
+        </div>
+        {!snapshotId && <p className="mt-3 rounded bg-amber-50 p-3 text-xs text-amber-800">키워드 분석 후 snapshot이 생기면 근거 브리프를 만들 수 있습니다.</p>}
+        {pack && <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500"><span>FactPack #{pack.fact_pack_id}</span><span>snapshot #{pack.snapshot_id}</span><span>v{pack.latest_version}</span><span className={pack.latest_status === 'approved' ? 'font-semibold text-emerald-700' : 'text-amber-700'}>{pack.latest_status === 'approved' ? '승인됨' : '검토 중'}</span></div>}
+      </div>
+      {latest && (
+        <div className="mt-3 space-y-3">
+          {latest.warnings.length > 0 && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4"><h3 className="text-xs font-semibold text-amber-900">근거 경고</h3><ul className="mt-2 space-y-1 text-xs text-amber-800">{latest.warnings.map((warning) => <li key={warning}>· {warning}</li>)}</ul></div>}
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {latest.evidence.map((item) => (
+              <label key={item.id} className={`rounded-xl border bg-white p-4 ${selected.includes(item.id) ? 'border-indigo-400 ring-1 ring-indigo-100' : 'border-slate-200'}`}>
+                <div className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" checked={selected.includes(item.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /><div className="min-w-0"><b className="text-xs">{item.label}</b><p className="mt-1 break-words text-xs text-slate-700">{factValue(item.value)}</p></div></div>
+                <div className="mt-3 flex flex-wrap gap-1 text-[10px] text-slate-400"><span>{item.source_type}</span><span>{item.freshness}</span>{item.from_cache && <span>cache</span>}<span>{item.collected_at ? new Date(item.collected_at).toLocaleDateString() : '수집일 미상'}</span></div>
+                {item.source_url && <a className="mt-1 block truncate text-[10px] text-indigo-600 underline" href={safeExternalUrl(item.source_url)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>출처 열기</a>}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const INTENT_LABELS: Record<SearchIntent, string> = {
+  informational: '정보 탐색',
+  howto: '방법·실행',
+  eligibility: '신청·자격',
+  troubleshooting: '문제 해결',
+  comparison_review: '비교·후기',
+  commercial: '구매·수익',
+  local_visit: '지역·방문',
+  other: '기타',
+};
+
+export function IntentBoardWorkspace({
+  board,
+  loading,
+  error = '',
+  snapshotId,
+  busy,
+  onAnalyze,
+  onWatch,
+  onPlan,
+  onOpen,
+  onRetry = () => undefined,
+}: {
+  board: IntentBoardResponse | null;
+  loading: boolean;
+  error?: string;
+  snapshotId: number | null;
+  busy: string;
+  onAnalyze: (keyword: string) => void;
+  onWatch: (keyword: string) => void;
+  onPlan: (keyword: string) => void;
+  onOpen: (url: string | null) => void;
+  onRetry?: () => void;
+}) {
+  const [filter, setFilter] = useState<SearchIntent | 'all'>('all');
+  const items = board?.items.filter((item) => filter === 'all' || item.intent === filter) ?? [];
+  const available = Array.from(new Set(board?.items.map((item) => item.intent) ?? []));
+  return (
+    <section className="min-w-0 p-4" aria-label="의도별 연관 키워드 보드">
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <h2 className="text-lg font-bold">의도별 연관 키워드</h2>
+        <p className="mt-1 text-xs text-slate-500">snapshot의 저장 데이터만 분류합니다. Organic·광고 경쟁·상대 Trend는 서로 합산하지 않습니다.</p>
+        <div className="mt-3 flex flex-wrap gap-1">
+          <button className={`rounded-full px-2 py-1 text-[11px] ${filter === 'all' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'}`} onClick={() => setFilter('all')}>전체</button>
+          {available.map((intent) => <button key={intent} className={`rounded-full px-2 py-1 text-[11px] ${filter === intent ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'}`} onClick={() => setFilter(intent)}>{INTENT_LABELS[intent]}</button>)}
+        </div>
+        {board && <p className="mt-2 text-[10px] text-slate-400">{board.intent_version} · snapshot #{board.snapshot_id} · {board.collected_at ? new Date(board.collected_at).toLocaleString() : '수집일 미상'}</p>}
+      </div>
+      {!snapshotId && <p className="mt-3 rounded-xl bg-amber-50 p-4 text-xs text-amber-800">먼저 키워드를 분석해 snapshot을 만드세요.</p>}
+      {loading && !board && <p className="mt-3 rounded-xl bg-white p-4 text-xs text-slate-500">의도 보드를 불러오는 중…</p>}
+      {error && <p className="mt-3 rounded-xl bg-rose-50 p-4 text-xs text-rose-700">{error} <button className="ml-2 underline" onClick={onRetry}>다시 시도</button></p>}
+      {!loading && !error && board && items.length === 0 && <p className="mt-3 rounded-xl bg-white p-4 text-xs text-slate-500">이 의도에 해당하는 키워드가 없습니다.</p>}
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {items.map((item) => (
+          <article key={`${item.intent}-${item.keyword}`} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-start justify-between gap-2"><div className="min-w-0"><span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">{INTENT_LABELS[item.intent]}</span><h3 className="mt-1 truncate font-semibold">{item.keyword}</h3></div><span className="text-[10px] text-slate-400">{item.confidence}</span></div>
+            <p className="mt-1 text-[10px] text-slate-400">근거 marker {item.matched_markers.join(' · ') || '없음'} · 콘텐츠 {item.content.state}</p>
+            <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded bg-slate-50 p-2"><dt className="text-[10px] text-slate-400">PC / 모바일</dt><dd className="mt-0.5 font-medium">{item.metric?.masked ? '10 미만·마스킹' : `${item.metric?.pc?.toLocaleString() ?? '결측'} / ${item.metric?.mobile?.toLocaleString() ?? '결측'}`}</dd></div>
+              <div className="rounded bg-slate-50 p-2"><dt className="text-[10px] text-slate-400">광고 경쟁</dt><dd className="mt-0.5 font-medium">{item.commercial.ad_competition ?? '결측'}</dd></div>
+              <div className="rounded bg-slate-50 p-2"><dt className="text-[10px] text-slate-400">상대 Trend</dt><dd className="mt-0.5 font-medium">{item.trend?.latest_ratio == null ? '결측' : `${item.trend.latest_ratio.toFixed(1)} (절대량 아님)`}</dd></div>
+              <div className="rounded bg-slate-50 p-2"><dt className="text-[10px] text-slate-400">Organic 블로그</dt><dd className="mt-0.5 font-medium">{item.organic?.blog_total?.toLocaleString() ?? '결측'}</dd></div>
+            </dl>
+            {item.metric && <div className="mt-3"><PcMobileDonut pc={item.metric.pc} mobile={item.metric.mobile} masked={item.metric.masked} compact /></div>}
+            <div className="mt-3 flex flex-wrap gap-1"><button className="rounded bg-indigo-600 px-2 py-1 text-[10px] text-white disabled:opacity-40" disabled={!!busy} onClick={() => onAnalyze(item.keyword)}>재분석</button><button className="rounded border border-slate-300 px-2 py-1 text-[10px] disabled:opacity-40" disabled={!!busy} onClick={() => onWatch(item.keyword)}>Watchlist 추가</button><button className="rounded border border-slate-300 px-2 py-1 text-[10px] disabled:opacity-40" disabled={!!busy} onClick={() => onPlan(item.keyword)}>플랜 후보로 사용</button>{item.content.published_url && <button className="rounded border border-emerald-300 px-2 py-1 text-[10px] text-emerald-700" onClick={() => onOpen(item.content.published_url)}>기존 콘텐츠 열기</button>}</div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function DraftWorkbox({
+  items,
+  loading,
+  error = '',
+  busy,
+  compact = false,
+  query = '',
+  status = '',
+  nextCursor = null,
+  onQuery = () => undefined,
+  onStatusFilter = () => undefined,
+  onNext = () => undefined,
+  onReset = () => undefined,
+  onOpen,
+  onStatus,
+  onRegister = () => undefined,
+  onRetry = () => undefined,
+}: {
+  items: DraftSummary[];
+  loading: boolean;
+  error?: string;
+  busy: string;
+  compact?: boolean;
+  query?: string;
+  status?: DraftUserStatus | '';
+  nextCursor?: string | null;
+  onQuery?: (value: string) => void;
+  onStatusFilter?: (value: DraftUserStatus | '') => void;
+  onNext?: (cursor: string) => void;
+  onReset?: () => void;
+  onOpen: (draft: DraftSummary) => void;
+  onStatus: (draftId: number, status: DraftUserStatus) => void;
+  onRegister?: (draft: DraftSummary) => void;
+  onRetry?: () => void;
+}) {
+  return (
+    <section className={compact ? 'mt-4' : 'min-w-0 p-4'} aria-label="콘텐츠 작업함">
+      {!compact && (
+        <div className="mb-3 rounded-xl border border-slate-200 bg-white p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <div>
+              <h2 className="text-lg font-bold">콘텐츠 작업함</h2>
+              <p className="text-xs text-slate-500">초안 본문은 상세 진입 후에만 불러옵니다.</p>
+            </div>
+            <input
+              className="ml-auto min-w-56 rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              value={query}
+              onChange={(event) => onQuery(event.target.value)}
+              placeholder="키워드 또는 제목 검색"
+              aria-label="작업함 검색"
+            />
+            <select
+              className="rounded-lg border border-slate-300 px-3 py-2 text-xs"
+              value={status}
+              onChange={(event) => onStatusFilter(event.target.value as DraftUserStatus | '')}
+              aria-label="초안 상태 필터"
+            >
+              <option value="">전체 상태</option>
+              <option value="editing">작성 중</option>
+              <option value="review_ready">검수 대기</option>
+              <option value="archived">보관됨</option>
+            </select>
+          </div>
+        </div>
+      )}
+      <div className="space-y-2">
+        {error && <p className="rounded-xl bg-rose-50 p-4 text-xs text-rose-700">{error} <button className="ml-2 underline" onClick={onRetry}>다시 시도</button></p>}
+        {loading && items.length === 0 && <p className="rounded-xl bg-white p-4 text-xs text-slate-500">작업을 불러오는 중…</p>}
+        {!loading && !error && items.length === 0 && <p className="rounded-xl bg-white p-4 text-xs text-slate-500">저장된 콘텐츠 작업이 없습니다.</p>}
+        {items.map((item) => (
+          <article key={item.draft_id} className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-500">
+                  <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-700">{item.blog_type}</span>
+                  <span>{item.keyword}</span>
+                  <span>v{item.latest_version}</span>
+                  <span>{item.user_status}</span>
+                  <span>전달 {item.latest_job_status}</span>
+                </div>
+                <h3 className="mt-1 truncate font-semibold">{item.title}</h3>
+                <p className="mt-1 text-[10px] text-slate-400">최근 수정 {new Date(item.latest_version_at).toLocaleString()} · Draft #{item.draft_id}</p>
+                {item.latest_job_status === 'failed' && (
+                  <p className="mt-2 rounded bg-rose-50 px-2 py-1 text-xs text-rose-700">
+                    {item.latest_job_stage ?? 'Publisher'} 실패 · {item.latest_job_error ?? '상세 화면에서 오류를 확인하세요.'}
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-wrap justify-end gap-1">
+                <button className="rounded bg-indigo-600 px-2 py-1 text-xs text-white" onClick={() => onOpen(item)}>
+                  {item.latest_job_status === 'failed' ? '오류 확인·재시도' : '이어쓰기'}
+                </button>
+                <button className="rounded border border-emerald-300 px-2 py-1 text-xs text-emerald-700" disabled={busy === 'publish-register'} onClick={() => onRegister(item)}>발행 완료 등록</button>
+                {item.user_status === 'editing' && <button className="rounded border border-slate-300 px-2 py-1 text-xs" disabled={busy === 'draft-status'} onClick={() => onStatus(item.draft_id, 'review_ready')}>검수 대기</button>}
+                {item.user_status === 'review_ready' && <button className="rounded border border-slate-300 px-2 py-1 text-xs" disabled={busy === 'draft-status'} onClick={() => onStatus(item.draft_id, 'editing')}>다시 편집</button>}
+                {item.user_status !== 'archived' && <button className="rounded border border-slate-300 px-2 py-1 text-xs" disabled={busy === 'draft-status'} onClick={() => onStatus(item.draft_id, 'archived')}>보관</button>}
+                {item.user_status === 'archived' && <button className="rounded border border-slate-300 px-2 py-1 text-xs" disabled={busy === 'draft-status'} onClick={() => onStatus(item.draft_id, 'editing')}>복원</button>}
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+      {!compact && (nextCursor || items.length > 0) && (
+        <div className="mt-3 flex justify-end gap-2">
+          <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs" onClick={onReset}>처음</button>
+          <button className="rounded bg-slate-800 px-3 py-1.5 text-xs text-white disabled:opacity-40" disabled={!nextCursor} onClick={() => nextCursor && onNext(nextCursor)}>다음</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function graphPositions(nodes: ResearchGraphNode[]): Record<string, { x: number; y: number }> {
   const groups = new Map<number, ResearchGraphNode[]>();
   for (const node of nodes) groups.set(node.depth, [...(groups.get(node.depth) ?? []), node]);
@@ -355,6 +970,7 @@ function GraphWorkspace({ graph, selected, minimumVolume, busy, onBuild, onRefre
             <dt className="text-slate-400">경쟁</dt><dd className="text-right">{selected.competition ?? '결측'}</dd>
             <dt className="text-slate-400">cluster</dt><dd className="text-right">{selected.cluster}</dd>
           </dl>
+          <div className="mt-3"><PcMobileDonut pc={selected.pc_volume} mobile={selected.mobile_volume} masked={selected.volume_masked} compact /></div>
           <div className="mt-4 grid grid-cols-1 gap-2">
             <button className="rounded bg-violet-600 px-2 py-1.5 text-xs text-white disabled:opacity-40" disabled={searchadBlocked} onClick={onCommercial}>상업성 분석 · 4회</button>
             <button className="rounded bg-sky-600 px-2 py-1.5 text-xs text-white disabled:opacity-40" disabled={trendBlocked} onClick={onAudience}>타깃 상대 추세 · 15회</button>

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app import deps, errors
 from app.auth import require_token
 from app.services.analyze import AnalyzeService
 from app.services.drafts import DraftService
+from app.services.factpacks import FactPackService
+from app.services.intent import IntentBoardService
+from app.services.work import TodayWorkService
 from app.services.publishing import PublishService
+from app.services.published import PublishedContentService
 from app.services.research import ResearchService
 from intelligence.keyword.models import compact, normalize_keyword
 from planner.templates import is_active
@@ -36,6 +40,22 @@ def get_publish_service() -> PublishService:
 
 def get_research_service() -> ResearchService:
     return deps.get_research_service()
+
+
+def get_published_content_service() -> PublishedContentService:
+    return deps.get_published_content_service()
+
+
+def get_fact_pack_service() -> FactPackService:
+    return deps.get_fact_pack_service()
+
+
+def get_intent_board_service() -> IntentBoardService:
+    return deps.get_intent_board_service()
+
+
+def get_today_work_service() -> TodayWorkService:
+    return deps.get_today_work_service()
 
 
 @router.get("/handshake")
@@ -186,9 +206,42 @@ class AdPerformanceRequest(BaseModel):
         return self
 
 
+class TodayWorkItemResponse(BaseModel):
+    id: str
+    priority: int
+    source_type: str
+    source_id: int
+    keyword: str
+    title: str
+    reason: str
+    action: Literal[
+        "inspect_error", "resume_draft", "register_publication", "refresh_data", "open_analysis"
+    ]
+    stale: bool
+    draft_id: int | None
+    publish_job_id: int | None
+    published_content_id: int | None
+    published_url: str | None
+    calculated_at: str
+
+
+class TodayWorkResponse(BaseModel):
+    items: list[TodayWorkItemResponse]
+    calculated_at: str
+    limit: int
+
+
 @router.get("/capabilities")
 def get_capabilities(service: ResearchService = Depends(get_research_service)) -> dict:
     return service.capabilities()
+
+
+@router.get("/work/today", response_model=TodayWorkResponse)
+def get_today_work(
+    limit: int = Query(default=5, ge=1, le=5),
+    service: TodayWorkService = Depends(get_today_work_service),
+) -> dict:
+    return service.list(limit=limit)
 
 
 @router.get("/snapshots/{snapshot_id}")
@@ -199,6 +252,20 @@ def get_snapshot(
     if snapshot is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "snapshot not found"})
     return snapshot
+
+
+@router.get("/snapshots/{snapshot_id}/intent-board")
+def get_snapshot_intent_board(
+    snapshot_id: int,
+    service: IntentBoardService = Depends(get_intent_board_service),
+) -> dict:
+    board = service.get(snapshot_id)
+    if board is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "snapshot not found"},
+        )
+    return board
 
 
 @router.post("/keywords/preflight")
@@ -363,6 +430,8 @@ class DraftCreateRequest(BaseModel):
     plan_item: PlanItemInput
     questions: list[str] = Field(default_factory=list, max_length=12)
     generation_mode: Literal["skeleton", "llm"] = "skeleton"
+    fact_pack_id: int | None = Field(default=None, ge=1)
+    fact_pack_version: int | None = Field(default=None, ge=1)
 
     @field_validator("keyword")
     @classmethod
@@ -374,6 +443,8 @@ class DraftCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_generation_support(self):
+        if (self.fact_pack_id is None) != (self.fact_pack_version is None):
+            raise ValueError("fact_pack_id and fact_pack_version must be provided together")
         if self.generation_mode == "llm" and not is_active(self.plan_item.blog_type):
             raise ValueError(f"{self.plan_item.blog_type.value} is not enabled for LLM generation")
         return self
@@ -391,6 +462,8 @@ class DraftCreateResponse(BaseModel):
     title: str
     body: str
     source_snapshot_id: int | None
+    fact_pack_id: int | None
+    fact_pack_version: int | None
     provider: str
     model: str
     prompt_version: str
@@ -401,13 +474,19 @@ class DraftVersionView(BaseModel):
     title: str
     body: str
     note: str
+    created_at: str | None = None
 
 
 class DraftDetailResponse(BaseModel):
     draft_id: int
+    keyword: str
     blog_type: str
     title: str
     source_snapshot_id: int | None
+    user_status: Literal["editing", "review_ready", "archived"]
+    fact_pack_id: int | None = None
+    fact_pack_version: int | None = None
+    created_at: str | None = None
     plan: dict
     provider: str
     model: str
@@ -418,6 +497,124 @@ class DraftDetailResponse(BaseModel):
 class DraftVersionCreatedResponse(BaseModel):
     draft_id: int
     version: int
+
+
+class DraftSummaryResponse(BaseModel):
+    draft_id: int
+    keyword: str
+    title: str
+    blog_type: str
+    latest_version: int
+    latest_version_at: str
+    user_status: Literal["editing", "review_ready", "archived"]
+    latest_job_status: Literal["none", "pending", "draft_saved", "failed"]
+    latest_job_id: int | None
+    latest_job_stage: str | None
+    latest_job_error: str | None
+    source_snapshot_id: int | None
+
+
+class DraftListResponse(BaseModel):
+    items: list[DraftSummaryResponse]
+    next_cursor: str | None
+
+
+class DraftStatusRequest(BaseModel):
+    status: Literal["editing", "review_ready", "archived"]
+
+
+class DraftStatusResponse(BaseModel):
+    draft_id: int
+    user_status: Literal["editing", "review_ready", "archived"]
+
+
+class PublishedContentCreateRequest(BaseModel):
+    draft_id: int | None = Field(default=None, ge=1)
+    keyword: str = Field(default="", max_length=100)
+    canonical_url: str = Field(min_length=1, max_length=1000)
+    title: str = Field(min_length=1, max_length=200)
+    published_at: datetime
+    confirmed: bool = False
+
+    @model_validator(mode="after")
+    def require_source(self):
+        if self.draft_id is None and not normalize_keyword(self.keyword):
+            raise ValueError("draft_id or keyword is required")
+        return self
+
+
+class PublishedContentUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    published_at: datetime | None = None
+    archived: bool | None = None
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if self.title is None and self.published_at is None and self.archived is None:
+            raise ValueError("at least one published-content field is required")
+        return self
+
+
+class PublishedContentResponse(BaseModel):
+    id: int
+    draft_id: int | None
+    keyword: str
+    title: str
+    canonical_url: str
+    published_at: str
+    verified_at: str
+    archived_at: str | None
+    state: Literal["published", "stale", "archived"]
+    draft_count: int
+
+
+class PublishedContentListResponse(BaseModel):
+    items: list[PublishedContentResponse]
+
+
+class FactPackCreateRequest(BaseModel):
+    snapshot_id: int = Field(ge=1)
+    draft_id: int | None = Field(default=None, ge=1)
+
+
+class FactPackVersionCreateRequest(BaseModel):
+    selected_evidence_ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=100
+    )
+    status: Literal["draft", "approved"] = "draft"
+
+
+class FactPackEvidenceResponse(BaseModel):
+    id: str
+    kind: str
+    label: str
+    value: object
+    source_type: str
+    source_url: str | None
+    source_id: str
+    collected_at: str | None
+    from_cache: bool
+    freshness: Literal["fresh", "stale", "unknown"]
+    selected: bool
+
+
+class FactPackVersionResponse(BaseModel):
+    version: int
+    status: Literal["draft", "approved"]
+    evidence: list[FactPackEvidenceResponse]
+    warnings: list[str]
+    created_at: str | None
+
+
+class FactPackResponse(BaseModel):
+    fact_pack_id: int
+    snapshot_id: int
+    draft_id: int | None
+    keyword: str
+    created_at: str | None
+    latest_version: int
+    latest_status: Literal["draft", "approved"]
+    versions: list[FactPackVersionResponse]
 
 
 class PublishJobCreateRequest(BaseModel):
@@ -453,12 +650,33 @@ def create_draft(
             request.plan_item.model_dump(mode="json"),
             request.questions,
             snapshot_id=request.snapshot_id,
+            fact_pack_id=request.fact_pack_id,
+            fact_pack_version=request.fact_pack_version,
         )
     except LLMError as exc:
         provider = service.provider_name if service is not None else "llm"
         raise errors.LLMUnavailableError(str(exc), provider=provider) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"code": "invalid_draft", "message": str(exc)}) from exc
+
+
+@router.get("/drafts", response_model=DraftListResponse)
+def list_drafts(
+    query: str = Query(default="", max_length=200),
+    status: Literal["editing", "review_ready", "archived"] | None = None,
+    cursor: str | None = Query(default=None, max_length=500),
+    limit: int = Query(default=20, ge=1, le=50),
+    service_factory: Callable[[bool], DraftService] = Depends(get_draft_service_factory),
+) -> dict:
+    try:
+        return service_factory(False).list_drafts(
+            query=query, status=status, cursor=cursor, limit=limit
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_cursor", "message": str(exc)},
+        ) from exc
 
 
 @router.get("/drafts/{draft_id}", response_model=DraftDetailResponse)
@@ -470,6 +688,139 @@ def get_draft(
     if draft is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft not found"})
     return draft
+
+
+@router.patch("/drafts/{draft_id}/status", response_model=DraftStatusResponse)
+def update_draft_status(
+    draft_id: int,
+    request: DraftStatusRequest,
+    service_factory: Callable[[bool], DraftService] = Depends(get_draft_service_factory),
+) -> dict:
+    try:
+        updated = service_factory(False).update_status(draft_id, request.status)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "invalid_status_transition", "message": str(exc)},
+        ) from exc
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "not_found", "message": "draft not found"}
+        )
+    return updated
+
+
+@router.post("/factpacks", status_code=201, response_model=FactPackResponse)
+def create_fact_pack(
+    request: FactPackCreateRequest,
+    service: FactPackService = Depends(get_fact_pack_service),
+) -> dict:
+    try:
+        return service.create(request.snapshot_id, draft_id=request.draft_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_factpack", "message": str(exc)},
+        ) from exc
+
+
+@router.get("/factpacks/{fact_pack_id}", response_model=FactPackResponse)
+def get_fact_pack(
+    fact_pack_id: int,
+    service: FactPackService = Depends(get_fact_pack_service),
+) -> dict:
+    pack = service.get(fact_pack_id)
+    if pack is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "not_found", "message": "FactPack not found"}
+        )
+    return pack
+
+
+@router.post(
+    "/factpacks/{fact_pack_id}/versions",
+    status_code=201,
+    response_model=FactPackResponse,
+)
+def append_fact_pack_version(
+    fact_pack_id: int,
+    request: FactPackVersionCreateRequest,
+    service: FactPackService = Depends(get_fact_pack_service),
+) -> dict:
+    try:
+        pack = service.append_version(
+            fact_pack_id,
+            selected_evidence_ids=request.selected_evidence_ids,
+            status=request.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_factpack", "message": str(exc)},
+        ) from exc
+    if pack is None:
+        raise HTTPException(
+            status_code=404, detail={"code": "not_found", "message": "FactPack not found"}
+        )
+    return pack
+
+
+@router.post("/published-contents", status_code=201, response_model=PublishedContentResponse)
+def create_published_content(
+    request: PublishedContentCreateRequest,
+    service: PublishedContentService = Depends(get_published_content_service),
+) -> dict:
+    try:
+        return service.create(
+            draft_id=request.draft_id,
+            keyword_text=request.keyword,
+            canonical_url=request.canonical_url,
+            title=request.title,
+            published_at=request.published_at,
+            confirmed=request.confirmed,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 409 if "already registered" in message else 422
+        raise HTTPException(
+            status_code=status,
+            detail={"code": "invalid_publication", "message": message},
+        ) from exc
+
+
+@router.get("/published-contents", response_model=PublishedContentListResponse)
+def list_published_contents(
+    query: str = Query(default="", max_length=200),
+    include_archived: bool = False,
+    service: PublishedContentService = Depends(get_published_content_service),
+) -> dict:
+    return service.list(query=query, include_archived=include_archived)
+
+
+@router.patch("/published-contents/{content_id}", response_model=PublishedContentResponse)
+def update_published_content(
+    content_id: int,
+    request: PublishedContentUpdateRequest,
+    service: PublishedContentService = Depends(get_published_content_service),
+) -> dict:
+    try:
+        updated = service.update(
+            content_id,
+            title=request.title,
+            published_at=request.published_at,
+            archived=request.archived,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_publication", "message": str(exc)},
+        ) from exc
+    if updated is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "published content not found"},
+        )
+    return updated
 
 
 @router.post(

@@ -34,6 +34,7 @@ class SmartEditorAdapter:
         self._selectors = selectors or SMARTEDITOR_SELECTORS
         self._rng = rng
         self._sleep = sleeper
+        self._initial_save_state: dict[str, str] | None = None
 
     def _delay_ms(self) -> int:
         return int(30 + self._rng() * 90)  # 30~120ms per char, human-ish
@@ -60,6 +61,14 @@ class SmartEditorAdapter:
                 self._page.click(selector)
             except Exception:  # noqa: BLE001 - popup may have closed itself
                 pass
+
+    def remember_save_state(self) -> None:
+        """Capture persistence markers before typing can trigger NAVER autosave."""
+        self._initial_save_state = {
+            selector: self._page.fingerprint(selector)
+            for selector in self._selectors["draft_save_state"]
+            if self._page.exists(selector) and self._page.is_visible(selector)
+        }
 
     def input_title(self, title: str) -> None:
         selector = self._require("title", "input_title", editable=True)
@@ -92,11 +101,13 @@ class SmartEditorAdapter:
         missing_signals: list[str] = []
 
         def click_and_confirm() -> bool:
-            before_state = {
-                selector: self._page.fingerprint(selector)
-                for selector in self._selectors["draft_save_state"]
-                if self._page.exists(selector) and self._page.is_visible(selector)
-            }
+            before_state = self._initial_save_state
+            if before_state is None:
+                before_state = {
+                    selector: self._page.fingerprint(selector)
+                    for selector in self._selectors["draft_save_state"]
+                    if self._page.exists(selector) and self._page.is_visible(selector)
+                }
             self._page.click(self._require("draft_save_button", "draft_save"))
             confirmation = self._page.wait_for_any(
                 self._selectors["draft_save_success"], 5_000

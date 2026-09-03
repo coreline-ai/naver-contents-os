@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -107,6 +108,56 @@ def test_version_history_appends_and_keeps_originals(sessions):
     assert [v["version"] for v in stored["versions"]] == [1, 2]
     assert stored["versions"][0]["body"] == draft["body"]  # V1 원본 보존 (복원 가능)
     assert stored["title"] == "수정 제목"
+
+
+def test_draft_workbox_lists_latest_versions_with_stable_cursor_and_no_body(sessions):
+    service = DraftService(sessions, None)
+    first = service.create_draft("첫 키워드", {**PLAN_ITEM, "title": "첫 초안"})
+    second = service.create_draft("둘 키워드", {**PLAN_ITEM, "title": "둘 초안"})
+    service.add_version(first["draft_id"], "검색 가능한 최신 제목", "민감한 본문", "검수")
+    store = SqlJobStore(sessions)
+    job_id = store.create(first["draft_id"])
+    store.update(
+        job_id,
+        status="failed",
+        stage="input_body",
+        error_code="editor_error",
+        detail="본문 입력 실패",
+        history_entry={"stage": "input_body", "status": "failed", "at": "test"},
+    )
+
+    # Equal timestamps prove that the draft id is the deterministic tie-breaker.
+    tied = datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc)
+    with sessions() as session:
+        for row in session.query(DraftVersion).all():
+            row.created_at = tied
+        session.commit()
+
+    page1 = service.list_drafts(limit=1)
+    page2 = service.list_drafts(limit=1, cursor=page1["next_cursor"])
+    assert [page1["items"][0]["draft_id"], page2["items"][0]["draft_id"]] == [
+        second["draft_id"],
+        first["draft_id"],
+    ]
+    searched = service.list_drafts(query="검색 가능한")
+    assert searched["items"][0]["latest_job_status"] == "failed"
+    assert searched["items"][0]["latest_job_id"] == job_id
+    assert "body" not in searched["items"][0]
+    assert "민감한 본문" not in str(searched)
+    with pytest.raises(ValueError, match="invalid draft cursor"):
+        service.list_drafts(cursor="not-a-cursor")
+
+
+def test_draft_user_status_transitions_are_explicit(sessions):
+    service = DraftService(sessions, None)
+    created = service.create_draft("상태 키워드", PLAN_ITEM)
+    draft_id = created["draft_id"]
+    assert service.update_status(draft_id, "review_ready")["user_status"] == "review_ready"
+    assert service.update_status(draft_id, "archived")["user_status"] == "archived"
+    with pytest.raises(ValueError, match="not allowed"):
+        service.update_status(draft_id, "review_ready")
+    assert service.update_status(draft_id, "editing")["user_status"] == "editing"
+    assert service.update_status(999, "editing") is None
 
 
 def test_skeleton_draft_without_llm(sessions):
@@ -317,6 +368,33 @@ def test_draft_rest_create_get_and_add_version(draft_api):
     )
     assert updated.status_code == 201
     assert updated.json()["version"] == 2
+
+    listed = client.get("/v1/drafts?query=수정&limit=10", headers=_headers(token))
+    assert listed.status_code == 200
+    summary = listed.json()["items"][0]
+    assert summary["draft_id"] == body["draft_id"]
+    assert summary["title"] == "수정 제목"
+    assert "body" not in summary
+
+    review = client.patch(
+        f"/v1/drafts/{body['draft_id']}/status",
+        json={"status": "review_ready"},
+        headers=_headers(token),
+    )
+    assert review.status_code == 200
+    assert review.json()["user_status"] == "review_ready"
+
+
+def test_draft_list_api_rejects_invalid_cursor_and_missing_status_target(draft_api):
+    client, token, _ = draft_api
+    invalid = client.get("/v1/drafts?cursor=broken", headers=_headers(token))
+    assert invalid.status_code == 422
+    missing = client.patch(
+        "/v1/drafts/999/status",
+        json={"status": "archived"},
+        headers=_headers(token),
+    )
+    assert missing.status_code == 404
 
 
 def test_draft_api_supports_series_llm_generation(draft_api):

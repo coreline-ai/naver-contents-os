@@ -133,6 +133,8 @@ export interface DraftCreateRequest {
   plan_item: PlanItem;
   questions: string[];
   generation_mode: DraftGenerationMode;
+  fact_pack_id?: number | null;
+  fact_pack_version?: number | null;
 }
 
 export interface DraftCreateResponse {
@@ -141,6 +143,8 @@ export interface DraftCreateResponse {
   title: string;
   body: string;
   source_snapshot_id: number | null;
+  fact_pack_id: number | null;
+  fact_pack_version: number | null;
   provider: string;
   model: string;
   prompt_version: string;
@@ -151,18 +155,185 @@ export interface DraftVersion {
   title: string;
   body: string;
   note: string;
+  created_at: string | null;
 }
+
+export type DraftUserStatus = 'editing' | 'review_ready' | 'archived';
+export type DraftDeliveryStatus = 'none' | 'pending' | 'draft_saved' | 'failed';
 
 export interface DraftDetail {
   draft_id: number;
+  keyword: string;
   blog_type: string;
   title: string;
   source_snapshot_id: number | null;
+  user_status: DraftUserStatus;
+  fact_pack_id: number | null;
+  fact_pack_version: number | null;
+  created_at: string | null;
   plan: PlanItem;
   provider: string;
   model: string;
   prompt_version: string;
   versions: DraftVersion[];
+}
+
+export interface DraftSummary {
+  draft_id: number;
+  keyword: string;
+  title: string;
+  blog_type: string;
+  latest_version: number;
+  latest_version_at: string;
+  user_status: DraftUserStatus;
+  latest_job_status: DraftDeliveryStatus;
+  latest_job_id: number | null;
+  latest_job_stage: string | null;
+  latest_job_error: string | null;
+  source_snapshot_id: number | null;
+}
+
+export interface DraftListResponse {
+  items: DraftSummary[];
+  next_cursor: string | null;
+}
+
+export type ContentState = 'missing' | 'draft_only' | 'published' | 'stale' | 'archived';
+
+export interface PublishedContent {
+  id: number;
+  draft_id: number | null;
+  keyword: string;
+  title: string;
+  canonical_url: string;
+  published_at: string;
+  verified_at: string;
+  archived_at: string | null;
+  state: 'published' | 'stale' | 'archived';
+  draft_count: number;
+}
+
+export interface PublishedContentListResponse {
+  items: PublishedContent[];
+}
+
+export type FactPackStatus = 'draft' | 'approved';
+export type EvidenceFreshness = 'fresh' | 'stale' | 'unknown';
+
+export interface FactPackEvidence {
+  id: string;
+  kind: string;
+  label: string;
+  value: unknown;
+  source_type: string;
+  source_url: string | null;
+  source_id: string;
+  collected_at: string | null;
+  from_cache: boolean;
+  freshness: EvidenceFreshness;
+  selected: boolean;
+}
+
+export interface FactPackVersion {
+  version: number;
+  status: FactPackStatus;
+  evidence: FactPackEvidence[];
+  warnings: string[];
+  created_at: string | null;
+}
+
+export interface FactPack {
+  fact_pack_id: number;
+  snapshot_id: number;
+  draft_id: number | null;
+  keyword: string;
+  created_at: string | null;
+  latest_version: number;
+  latest_status: FactPackStatus;
+  versions: FactPackVersion[];
+}
+
+export type SearchIntent = 'informational' | 'howto' | 'eligibility' | 'troubleshooting' | 'comparison_review' | 'commercial' | 'local_visit' | 'other';
+
+export interface IntentBoardItem {
+  keyword: string;
+  intent: SearchIntent;
+  intent_version: 'intent-v1';
+  matched_markers: string[];
+  confidence: 'low' | 'medium' | 'high';
+  metric: {
+    pc: number | null;
+    mobile: number | null;
+    total: number | null;
+    masked: boolean;
+    source: string;
+    collected_at: string | null;
+    from_cache: boolean;
+  } | null;
+  trend: {
+    latest_period: string | null;
+    latest_ratio: number;
+    relative_change: number | null;
+    source: string;
+    collected_at: string | null;
+    from_cache: boolean;
+    note: string;
+  } | null;
+  organic: {
+    blog_total: number | null;
+    cafe_total: number | null;
+    kin_total: number | null;
+    news_total: number | null;
+    source: string;
+    collected_at: string | null;
+    note: string;
+  } | null;
+  commercial: {
+    ad_competition: string | null;
+    source: string;
+    note: string;
+  };
+  content: {
+    state: ContentState;
+    draft_count: number;
+    last_draft_at: string | null;
+    published_content_id: number | null;
+    published_url: string | null;
+    published_at: string | null;
+  };
+}
+
+export interface IntentBoardResponse {
+  snapshot_id: number;
+  keyword: string;
+  intent_version: 'intent-v1';
+  collected_at: string | null;
+  items: IntentBoardItem[];
+}
+
+export type TodayWorkAction = 'inspect_error' | 'resume_draft' | 'register_publication' | 'refresh_data' | 'open_analysis';
+
+export interface TodayWorkItem {
+  id: string;
+  priority: number;
+  source_type: string;
+  source_id: number;
+  keyword: string;
+  title: string;
+  reason: string;
+  action: TodayWorkAction;
+  stale: boolean;
+  draft_id: number | null;
+  publish_job_id: number | null;
+  published_content_id: number | null;
+  published_url: string | null;
+  calculated_at: string;
+}
+
+export interface TodayWorkResponse {
+  items: TodayWorkItem[];
+  calculated_at: string;
+  limit: number;
 }
 
 export interface PublishJobHistoryEntry {
@@ -339,6 +510,8 @@ export interface ResearchGraphNode {
   keyword: string;
   depth: number;
   volume: number | null;
+  pc_volume: number | null;
+  mobile_volume: number | null;
   volume_masked: boolean;
   competition: string | null;
   cluster: string;
@@ -457,7 +630,14 @@ export interface AdPerformanceRow {
   conversions: number | null;
   conversion_value: number | null;
   roas: number | null;
-  content: { state: 'missing' | 'stale' | 'covered'; draft_count: number; last_draft_at: string | null };
+  content: {
+    state: ContentState;
+    draft_count: number;
+    last_draft_at: string | null;
+    published_content_id: number | null;
+    published_url: string | null;
+    published_at: string | null;
+  };
 }
 
 export interface AdPerformanceResponse {

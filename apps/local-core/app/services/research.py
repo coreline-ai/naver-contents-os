@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.errors import CoreError
-from app.models_db import DiscoveryRun, Draft, Keyword, KeywordSnapshot, WatchlistItem
+from app.models_db import AdPerformanceSnapshot, DiscoveryRun, Keyword, KeywordSnapshot, WatchlistItem
 from app.services.freshness import (
     SCORE_VERSION,
     combine_freshness,
@@ -22,6 +22,7 @@ from app.services.freshness import (
     summarize_news,
     summarize_trend,
 )
+from app.services.published import build_content_state_index
 from intelligence.cluster import cluster_keywords
 from intelligence.keyword.models import compact, normalize_keyword
 from providers.models import KeywordMetric, TrendSeries
@@ -299,6 +300,8 @@ class ResearchService:
                 "keyword": seed,
                 "depth": 0,
                 "volume": None,
+                "pc_volume": None,
+                "mobile_volume": None,
                 "volume_masked": False,
                 "competition": None,
                 "cluster": "seed",
@@ -329,6 +332,8 @@ class ResearchService:
                 "keyword": metric.keyword,
                 "depth": depth,
                 "volume": _volume(metric),
+                "pc_volume": metric.monthly_pc_searches,
+                "mobile_volume": metric.monthly_mobile_searches,
                 "volume_masked": metric.volume_masked,
                 "competition": metric.ad_competition,
                 "cluster": "기타",
@@ -420,6 +425,8 @@ class ResearchService:
         if exact:
             seed_node.update(
                 volume=_volume(exact),
+                pc_volume=exact.monthly_pc_searches,
+                mobile_volume=exact.monthly_mobile_searches,
                 volume_masked=exact.volume_masked,
                 competition=exact.ad_competition,
             )
@@ -1131,20 +1138,7 @@ class ResearchService:
 
         local_content: dict[str, dict] = {}
         with self._sessions() as session:
-            local_rows = session.execute(
-                select(Keyword.text, func.count(Draft.id), func.max(Draft.created_at))
-                .outerjoin(Draft, Draft.keyword_id == Keyword.id)
-                .group_by(Keyword.id)
-            ).all()
-            for text, count, last_draft_at in local_rows:
-                state = "missing" if not count else "covered"
-                if last_draft_at and (datetime.now(timezone.utc).replace(tzinfo=None) - last_draft_at.replace(tzinfo=None)).days > 90:
-                    state = "stale"
-                local_content[_metric_key(text)] = {
-                    "state": state,
-                    "draft_count": count,
-                    "last_draft_at": _iso(last_draft_at) if last_draft_at else None,
-                }
+            local_content = build_content_state_index(session)
 
         rows = []
         for keyword_row in keyword_rows:
@@ -1152,7 +1146,15 @@ class ResearchService:
             keyword = str(keyword_row.get("keyword", ""))
             stat = stats_by_id.get(keyword_id, {})
             content = local_content.get(
-                _metric_key(keyword), {"state": "missing", "draft_count": 0, "last_draft_at": None}
+                _metric_key(keyword).casefold(),
+                {
+                    "state": "missing",
+                    "draft_count": 0,
+                    "last_draft_at": None,
+                    "published_content_id": None,
+                    "published_url": None,
+                    "published_at": None,
+                },
             )
             item = {
                 "id": keyword_id,
@@ -1188,6 +1190,27 @@ class ResearchService:
             and row["content"]["state"] in {"missing", "stale"}
         ]
         recommendations.sort(key=lambda row: row["clicks"] or 0, reverse=True)
+        if keyword_rows:
+            with self._sessions() as session:
+                session.add(
+                    AdPerformanceSnapshot(
+                        since=since,
+                        until=until,
+                        payload={
+                            "recommendations": [
+                                {
+                                    "keyword": row["keyword"],
+                                    "reason": row["reason"],
+                                    "content_state": row["content_state"],
+                                    "clicks": row["clicks"],
+                                    "conversions": row["conversions"],
+                                }
+                                for row in recommendations[:20]
+                            ]
+                        },
+                    )
+                )
+                session.commit()
         statuses = {
             "campaigns": campaign_status,
             "adgroups": adgroup_status,

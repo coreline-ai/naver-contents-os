@@ -71,7 +71,28 @@ class PlaywrightPageAdapter:
 
     def is_editable(self, selector: str) -> bool:
         locator = self._find(selector)
-        return bool(locator is not None and locator.is_visible() and locator.is_editable())
+        if locator is None or not locator.is_visible():
+            return False
+        try:
+            if locator.is_editable():
+                return True
+        except Exception:  # noqa: BLE001 - SmartEditor paragraphs are custom keyboard targets
+            pass
+        # SmartEditor ONE does not expose contenteditable on its title/body
+        # paragraphs, but clicking them installs a custom caret and accepts
+        # keyboard events. Keep this fallback narrowly scoped to those targets.
+        try:
+            return bool(
+                locator.evaluate(
+                    """(node) => node.isContentEditable || node.matches(
+                        '.se-documentTitle .se-text-paragraph, '
+                        + '.se-section-text .se-text-paragraph, '
+                        + '.se-component.se-text .se-text-paragraph'
+                    )"""
+                )
+            )
+        except Exception:  # noqa: BLE001 - detached editor node means not editable
+            return False
 
     def wait_for_any(self, selectors: list[str], timeout_ms: int) -> str | None:
         deadline = time.monotonic() + timeout_ms / 1000
@@ -108,7 +129,9 @@ class PlaywrightPageAdapter:
         if locator is None:
             raise LookupError(f"selector not found: {selector}")
         locator.click()
-        locator.press_sequentially(text, delay=delay_ms)
+        # SmartEditor uses a custom caret on non-contenteditable paragraphs, so
+        # page keyboard events are more reliable than locator.fill/type.
+        self._page.keyboard.type(text, delay=delay_ms)
 
     def press(self, key: str) -> None:
         self._page.keyboard.press(key)

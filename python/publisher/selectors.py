@@ -26,7 +26,8 @@ SMARTEDITOR_SELECTORS: dict[str, list[str]] = {
     "body": [
         ".se-main-container .se-text-paragraph",
         ".se-main-container [contenteditable='true']",
-        ".se-component-content .se-text-paragraph",
+        ".se-section-text .se-text-paragraph",
+        ".se-component.se-text .se-text-paragraph",
     ],
     "image_button": [
         "button.se-image-toolbar-button",
@@ -35,6 +36,8 @@ SMARTEDITOR_SELECTORS: dict[str, list[str]] = {
     ],
     "publish_open_button": [
         "button.publish_btn__WEpYf",
+        "button[class^='publish_btn__']",
+        "button[class*=' publish_btn__']",
         "button[data-click-area='tpb.publish']",
         ".header__Uj5xL button.publish_btn",
     ],
@@ -45,17 +48,21 @@ SMARTEDITOR_SELECTORS: dict[str, list[str]] = {
     ],
     "draft_save_button": [
         "button.save_btn__bzc5B",
+        "button[class^='save_btn__']",
+        "button[class*=' save_btn__']",
         ".save_area button.save_btn",
         "button[data-click-area='tpb.save']",
     ],
     "draft_save_success": [
         "text=임시저장되었습니다",
         "text=저장되었습니다",
+        "span[class^='autosave_message__'][class*='is_show__']",
         "[class*='save_complete']",
     ],
     # A persistent save-state/timestamp is intentionally separate from the
     # transient confirmation above. Both must be observed before a job closes.
     "draft_save_state": [
+        "button[class^='save_count_btn__']",
         "[class*='saveStatus']",
         ".save_area [class*='time']",
         "button[data-click-area='tpb.save'] time",

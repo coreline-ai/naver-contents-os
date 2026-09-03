@@ -59,6 +59,11 @@ class Draft(Base):
     provider: Mapped[str] = mapped_column(String(40), default="skeleton")
     model: Mapped[str] = mapped_column(String(100), default="")
     prompt_version: Mapped[str] = mapped_column(String(20), default="v1")
+    user_status: Mapped[str] = mapped_column(String(20), default="editing", index=True)
+    fact_pack_id: Mapped[int | None] = mapped_column(
+        ForeignKey("fact_packs.id"), nullable=True, index=True
+    )
+    fact_pack_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -143,3 +148,60 @@ class DiscoveryRun(Base):
     payload: Mapped[dict] = mapped_column(JSON)
     score_version: Mapped[str] = mapped_column(String(20), default="freshness-v1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+
+
+class PublishedContent(Base):
+    """A public post explicitly confirmed by the user; never inferred from draft-save."""
+
+    __tablename__ = "published_contents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[int | None] = mapped_column(
+        ForeignKey("drafts.id"), nullable=True, unique=True, index=True
+    )
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("keywords.id"), index=True)
+    canonical_url: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class FactPack(Base):
+    """Versioned, user-reviewed evidence selected from one keyword snapshot."""
+
+    __tablename__ = "fact_packs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("keyword_snapshots.id"), index=True)
+    keyword_id: Mapped[int] = mapped_column(ForeignKey("keywords.id"), index=True)
+    draft_id: Mapped[int | None] = mapped_column(ForeignKey("drafts.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class FactPackVersion(Base):
+    __tablename__ = "fact_pack_versions"
+    __table_args__ = (
+        UniqueConstraint("fact_pack_id", "version", name="uq_fact_pack_versions_pack_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fact_pack_id: Mapped[int] = mapped_column(ForeignKey("fact_packs.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class AdPerformanceSnapshot(Base):
+    """Sanitized local recommendations from an explicit ad-performance lookup."""
+
+    __tablename__ = "ad_performance_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    since: Mapped[str] = mapped_column(String(10))
+    until: Mapped[str] = mapped_column(String(10))
+    payload: Mapped[dict] = mapped_column(JSON)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)

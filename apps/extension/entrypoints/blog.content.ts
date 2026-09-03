@@ -10,7 +10,7 @@ export default defineContentScript({
       if (message?.type !== MSG_GET_BLOG) return false;
       const parsed = parseBlogPost(document);
       if (!parsed.found) return false; // let the frame that has the post answer
-      sendResponse(parsed);
+      sendResponse({ ...parsed, url: window.location.href });
       return false;
     });
   },

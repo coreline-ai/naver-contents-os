@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from publisher.editor import EditorError, SmartEditorAdapter
-from publisher.health import HealthReport
+from publisher.health import HealthReport, run_health_check
 from publisher.page import PageLike
 
 STAGES = ("health_check", "prepare_editor", "input_title", "input_body", "input_tags", "draft_save")
@@ -25,10 +25,8 @@ def _now() -> str:
 
 class PublishJobRunner:
     def __init__(self, store: JobStore, health_runner=None):
-        from publisher.health import run_health_check
-
         self._store = store
-        self._run_health = health_runner or run_health_check
+        self._run_health = health_runner
 
     def run(
         self,
@@ -78,7 +76,11 @@ class PublishJobRunner:
         # gate: no input starts unless every health check passes (docs/05)
         record("health_check", "running")
         try:
-            report: HealthReport = self._run_health(page, blog_id)
+            report: HealthReport = (
+                self._run_health(page, blog_id)
+                if self._run_health is not None
+                else run_health_check(page, blog_id, require_tags=bool(tags))
+            )
         except Exception as exc:  # noqa: BLE001 - browser failures must close the job cleanly
             detail = f"health check raised {type(exc).__name__}: {exc}"
             record(
@@ -106,9 +108,16 @@ class PublishJobRunner:
             return {"job_id": job_id, "status": "failed", "stage": "health_check", "failed_checks": report.failed}
         record("health_check", "passed")
 
+        def prepare_editor() -> None:
+            adapter.dismiss_popups()
+            # NAVER may autosave while title/body are being typed. Capture the
+            # server-backed count/status before input so that change remains a
+            # valid independent persistence signal at the final save stage.
+            adapter.remember_save_state()
+
         steps = (
             # Health already navigated to and validated this exact editor page.
-            ("prepare_editor", adapter.dismiss_popups),
+            ("prepare_editor", prepare_editor),
             ("input_title", lambda: adapter.input_title(title)),
             ("input_body", lambda: adapter.input_body(body)),
             ("input_tags", lambda: adapter.input_tags(tags)),

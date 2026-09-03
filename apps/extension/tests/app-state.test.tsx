@@ -89,6 +89,8 @@ const draft: DraftCreateResponse = {
   title: '생성된 제목',
   body: '생성된 본문',
   source_snapshot_id: 7,
+  fact_pack_id: null,
+  fact_pack_version: null,
   provider: 'skeleton',
   model: '',
   prompt_version: 'v1',
@@ -96,9 +98,14 @@ const draft: DraftCreateResponse = {
 
 const draftDetail: DraftDetail = {
   draft_id: draft.draft_id,
+  keyword: '테스트',
   blog_type: 'HOWTO',
   title: draft.title,
   source_snapshot_id: draft.source_snapshot_id,
+  user_status: 'editing',
+  fact_pack_id: null,
+  fact_pack_version: null,
+  created_at: '2026-09-02T00:00:00Z',
   plan: planItem,
   provider: draft.provider,
   model: draft.model,
@@ -109,6 +116,7 @@ const draftDetail: DraftDetail = {
       title: draft.title,
       body: draft.body,
       note: 'V1 원본',
+      created_at: '2026-09-02T00:00:00Z',
     },
   ],
 };
@@ -250,6 +258,44 @@ describe('sidepanel keyword state', () => {
     await act(async () => setInput(input, '둘째 키워드'));
     expect(container.textContent).not.toContain('15편 콘텐츠 플랜');
     expect(container.textContent).not.toContain('생성된 초안 v1');
+  });
+
+  it('restores a recent draft after extension state is recreated', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/v1/handshake')) return response({ status: 'ok' });
+        if (url.includes('/v1/drafts?limit=3')) return response({
+          items: [{
+            draft_id: 11,
+            keyword: '테스트',
+            title: '생성된 제목',
+            blog_type: 'HOWTO',
+            latest_version: 1,
+            latest_version_at: '2026-09-02T00:00:00Z',
+            user_status: 'editing',
+            latest_job_status: 'none',
+            latest_job_id: null,
+            latest_job_stage: null,
+            latest_job_error: null,
+            source_snapshot_id: 7,
+          }],
+          next_cursor: null,
+        });
+        if (url.endsWith('/v1/drafts/11')) return response(draftDetail);
+        return response({}, 404);
+      }),
+    );
+    await act(async () => root.render(wrapper(<App />)));
+    await settle();
+    await settle();
+    expect(container.textContent).toContain('최근 작업 계속');
+    const resume = [...container.querySelectorAll('button')].find((candidate) => candidate.textContent?.includes('이어쓰기'))!;
+    await act(async () => resume.click());
+    await settle();
+    expect(container.textContent).toContain('생성된 초안 v1');
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="키워드 입력"]')?.value).toBe('테스트');
   });
 
   it('ignores an old analysis response after the keyword changes', async () => {
