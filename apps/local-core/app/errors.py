@@ -77,3 +77,13 @@ class LLMUnavailableError(CoreError):
 
     code = "llm_unavailable"
     http_status = 503
+
+
+class DraftVersionConflict(CoreError):
+    code = "draft_version_conflict"
+    http_status = 409
+
+
+class FactPackVersionConflict(CoreError):
+    code = "factpack_version_conflict"
+    http_status = 409

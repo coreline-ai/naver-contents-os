@@ -1,8 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -205,3 +216,190 @@ class AdPerformanceSnapshot(Base):
     until: Mapped[str] = mapped_column(String(10))
     payload: Mapped[dict] = mapped_column(JSON)
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
+
+
+class OwnedChannel(Base):
+    """A user-declared reporting scope; never stores Naver credentials or cookies."""
+
+    __tablename__ = "owned_channels"
+    __table_args__ = (
+        UniqueConstraint("source", "display_name", name="uq_owned_channels_source_name"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(30), index=True)
+    channel_kind: Mapped[str] = mapped_column(String(20))
+    display_name: Mapped[str] = mapped_column(String(100))
+    site_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    ownership_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class PerformanceImportRun(Base):
+    """One sanitized aggregate import. Raw files and original account payloads are not stored."""
+
+    __tablename__ = "performance_import_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel_id: Mapped[int] = mapped_column(ForeignKey("owned_channels.id"), index=True)
+    source: Mapped[str] = mapped_column(String(30), index=True)
+    data_kind: Mapped[str] = mapped_column(String(30), index=True)
+    period_start: Mapped[date] = mapped_column(Date, index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    grain: Mapped[str] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(20), default="ready", index=True)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    warning_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    warnings: Mapped[list] = mapped_column(JSON, default=list)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ContentPerformanceSnapshot(Base):
+    __tablename__ = "content_performance_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    import_run_id: Mapped[int] = mapped_column(
+        ForeignKey("performance_import_runs.id", ondelete="CASCADE"), index=True
+    )
+    channel_id: Mapped[int] = mapped_column(ForeignKey("owned_channels.id"), index=True)
+    published_content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("published_contents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    canonical_url: Mapped[str | None] = mapped_column(String(1000), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    period_start: Mapped[date] = mapped_column(Date, index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    grain: Mapped[str] = mapped_column(String(10))
+    data_state: Mapped[str] = mapped_column(String(20), index=True)
+    views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inflows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ctr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    average_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
+    likes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    comments: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class QueryPerformanceSnapshot(Base):
+    __tablename__ = "query_performance_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    import_run_id: Mapped[int] = mapped_column(
+        ForeignKey("performance_import_runs.id", ondelete="CASCADE"), index=True
+    )
+    channel_id: Mapped[int] = mapped_column(ForeignKey("owned_channels.id"), index=True)
+    published_content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("published_contents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    query: Mapped[str] = mapped_column(String(200), index=True)
+    canonical_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    period_start: Mapped[date] = mapped_column(Date, index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    grain: Mapped[str] = mapped_column(String(10))
+    data_state: Mapped[str] = mapped_column(String(20), index=True)
+    impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inflows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ctr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    average_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class PerformanceTrackingLink(Base):
+    """A user-created SmartStore tracking combination linked to an optional publication."""
+
+    __tablename__ = "performance_tracking_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tracking_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    published_content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("published_contents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    destination_url: Mapped[str] = mapped_column(String(1000))
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class CommerceAttributionSnapshot(Base):
+    __tablename__ = "commerce_attribution_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    import_run_id: Mapped[int] = mapped_column(
+        ForeignKey("performance_import_runs.id", ondelete="CASCADE"), index=True
+    )
+    channel_id: Mapped[int] = mapped_column(ForeignKey("owned_channels.id"), index=True)
+    published_content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("published_contents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    dedupe_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    tracking_id: Mapped[str] = mapped_column(String(100), index=True)
+    destination_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    period_start: Mapped[date] = mapped_column(Date, index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    grain: Mapped[str] = mapped_column(String(10))
+    data_state: Mapped[str] = mapped_column(String(20), index=True)
+    inflows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    product_views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    orders: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    conversion_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attributed_revenue: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class SitePerformanceSnapshot(Base):
+    __tablename__ = "site_performance_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    import_run_id: Mapped[int] = mapped_column(
+        ForeignKey("performance_import_runs.id", ondelete="CASCADE"), index=True
+    )
+    channel_id: Mapped[int] = mapped_column(ForeignKey("owned_channels.id"), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    page_url: Mapped[str] = mapped_column(String(1000), index=True)
+    period_start: Mapped[date] = mapped_column(Date, index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    grain: Mapped[str] = mapped_column(String(10))
+    data_state: Mapped[str] = mapped_column(String(20), index=True)
+    collected_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    indexed_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    impressions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clicks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ctr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class PerformanceRecommendation(Base):
+    """Versioned, explainable suggestions generated from sanitized snapshots only."""
+
+    __tablename__ = "performance_recommendations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recommendation_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    channel_id: Mapped[int] = mapped_column(ForeignKey("owned_channels.id"), index=True)
+    source_snapshot_type: Mapped[str] = mapped_column(String(30))
+    source_snapshot_id: Mapped[int] = mapped_column(Integer, index=True)
+    published_content_id: Mapped[int | None] = mapped_column(
+        ForeignKey("published_contents.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    keyword: Mapped[str] = mapped_column(String(200), index=True)
+    rule_code: Mapped[str] = mapped_column(String(40), index=True)
+    action: Mapped[str] = mapped_column(String(30))
+    reason: Mapped[str] = mapped_column(String(500))
+    confidence: Mapped[str] = mapped_column(String(20))
+    calculation_version: Mapped[str] = mapped_column(String(20), default="performance-v2")
+    period_start: Mapped[date] = mapped_column(Date)
+    period_end: Mapped[date] = mapped_column(Date)
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

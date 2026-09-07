@@ -9,6 +9,7 @@ from typing import Callable, ContextManager
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.services.drafts import DraftService, SqlJobStore
+from app.errors import DraftVersionConflict
 from publisher.browser import attached_page
 from publisher.editor import SmartEditorAdapter
 from publisher.jobs import PublishJobRunner
@@ -52,11 +53,14 @@ class PublishService:
         blog_id: str,
         tags: list[str],
         cdp_url: str,
+        expected_version: int | None = None,
     ) -> PreparedPublish | None:
         draft = DraftService(self._sessions, None).get_draft(draft_id)
         if draft is None or not draft["versions"]:
             return None
         latest = draft["versions"][-1]
+        if expected_version is not None and latest["version"] != expected_version:
+            raise DraftVersionConflict("원고의 최신 버전이 변경되었습니다. 최신 원고를 확인한 뒤 네이버 임시저장을 다시 요청하세요.")
         job_id = self._store.create(draft_id)
         return PreparedPublish(
             job_id=job_id,
@@ -108,3 +112,6 @@ class PublishService:
 
     def get_job(self, job_id: int) -> dict | None:
         return self._store.get(job_id)
+
+    def latest_job(self, draft_id: int) -> dict | None:
+        return self._store.latest(draft_id)

@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_DIR="${NCOS_CHROME_PROFILE:-$ROOT_DIR/data/chrome-automation-profile}"
 PORT="${NCOS_CDP_PORT:-9222}"
 CHROME_APP="${NCOS_CHROME_APP:-Google Chrome}"
-EXTENSION_DIR="${NCOS_EXTENSION_DIR:-$ROOT_DIR/apps/extension/.output/chrome-mv3}"
+EXTENSION_DIR="${NCOS_EXTENSION_DIR:-$ROOT_DIR/apps/extension/dist/chrome-mv3}"
 
 if [[ ! -f "$EXTENSION_DIR/manifest.json" ]]; then
   echo "Extension build not found: $EXTENSION_DIR/manifest.json" >&2

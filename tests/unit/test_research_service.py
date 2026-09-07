@@ -286,3 +286,32 @@ def test_shopping_batches_and_partial_news_does_not_fabricate_score(tmp_path):
     assert result["data_status"]["news"] == "unconfigured"
     assert all(candidate["freshness_score"] is None for candidate in result["candidates"])
     assert all(candidate["confidence"] == "unavailable" for candidate in result["candidates"])
+
+
+def test_recent_rising_is_read_only_and_keeps_latest_per_condition(tmp_path):
+    from app.models_db import DiscoveryRun
+    service, searchad, trend = make_service(tmp_path)
+    assert service.recent_rising() == {"runs": [], "read_only": True}
+    with service._sessions() as session:
+        for ident, seed, mode, region, category in [
+            (1, "여행", "general", "", ""), (2, "여행", "general", "", ""),
+            (3, "여행", "news", "", ""), (4, "여행", "local", "서울", ""),
+            (5, "여행", "local", "부산", ""), (6, "신발", "shopping", "", "1"),
+            (7, "신발", "shopping", "", "2"),
+        ]:
+            session.add(DiscoveryRun(id=ident, seed=seed, mode=mode, region=region,
+                                     category=category, comparison_key="fixture",
+                                     payload={"run_id": ident},
+                                     created_at=datetime(2026, 9, 6, tzinfo=timezone.utc)))
+        session.commit()
+    assert [run["run_id"] for run in service.recent_rising()["runs"]] == [7, 6, 5, 4, 3, 2]
+    assert [run["run_id"] for run in service.recent_rising(limit=2)["runs"]] == [7, 6]
+    assert searchad.related_calls == 0 and trend.calls == 0
+
+
+def test_recent_rising_service_rejects_unbounded_queries(tmp_path):
+    import pytest
+    service, _, _ = make_service(tmp_path)
+    for limit in (0, -1, 13):
+        with pytest.raises(ValueError):
+            service.recent_rising(limit=limit)

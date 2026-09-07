@@ -1,0 +1,111 @@
+/* Semantic colors only. Shared SVGs retain extension fallbacks. */
+:root {
+  color-scheme: light;
+  --canvas: #f5f7f5;
+  --surface: #ffffff;
+  --surface-subtle: #edf4ef;
+  --surface-hover: #e6eee8;
+  --editor: #fffefa;
+  --empty-editor: #fcfdfb;
+  --text: #16322c;
+  --muted: #52655c;
+  --line: #d9e2dc;
+  --control-border: #7d9184;
+  --green: #08734f;
+  --accent-hover: #075d41;
+  --on-accent: #ffffff;
+  --selected: #e6f2e9;
+  --selected-text: #075d41;
+  --focus: #08734f;
+  --error-bg: #fff2ed;
+  --error-text: #842c24;
+  --error-border: #b65e45;
+  --warning-text: #73531d;
+  --info-bg: #eff3fa;
+  --info-text: #325794;
+  --table-header: #eaf1eb;
+  --chart-pc: #2563eb;
+  --chart-mobile: #08734f;
+  --graph-bg: #edf4ef;
+  --graph-edge: #698375;
+  --graph-selected: #16322c;
+  --graph-ok: #08734f;
+  --graph-pending: #956017;
+  --selection-bg: #c0e7cd;
+  --selection-text: #16322c;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #111816;
+  --surface: #1b2521;
+  --surface-subtle: #22322a;
+  --surface-hover: #2c4035;
+  --editor: #17231c;
+  --empty-editor: #18241e;
+  --text: #e8f0eb;
+  --muted: #acbeb3;
+  --line: #3b4c42;
+  --control-border: #71877a;
+  --green: #4ade80;
+  --accent-hover: #86efac;
+  --on-accent: #102419;
+  --selected: #244333;
+  --selected-text: #86efac;
+  --focus: #86efac;
+  --error-bg: #38231f;
+  --error-text: #ffb4a6;
+  --error-border: #d68976;
+  --warning-text: #edce91;
+  --info-bg: #233343;
+  --info-text: #accbff;
+  --table-header: #283b30;
+  --chart-pc: #83b7ff;
+  --chart-mobile: #4ade80;
+  --graph-bg: #142019;
+  --graph-edge: #71877a;
+  --graph-selected: #e8f0eb;
+  --graph-ok: #4ade80;
+  --graph-pending: #edce91;
+  --selection-bg: #3d674e;
+  --selection-text: #ffffff;
+}
+
+/* Safe system fallback if JS is blocked; explicit user preference wins. */
+@media (prefers-color-scheme: dark) {
+:root:not([data-theme]) {
+  color-scheme: dark;
+  --canvas: #111816;
+  --surface: #1b2521;
+  --surface-subtle: #22322a;
+  --surface-hover: #2c4035;
+  --editor: #17231c;
+  --empty-editor: #18241e;
+  --text: #e8f0eb;
+  --muted: #acbeb3;
+  --line: #3b4c42;
+  --control-border: #71877a;
+  --green: #4ade80;
+  --accent-hover: #86efac;
+  --on-accent: #102419;
+  --selected: #244333;
+  --selected-text: #86efac;
+  --focus: #86efac;
+  --error-bg: #38231f;
+  --error-text: #ffb4a6;
+  --error-border: #d68976;
+  --warning-text: #edce91;
+  --info-bg: #233343;
+  --info-text: #accbff;
+  --table-header: #283b30;
+  --chart-pc: #83b7ff;
+  --chart-mobile: #4ade80;
+  --graph-bg: #142019;
+  --graph-edge: #71877a;
+  --graph-selected: #e8f0eb;
+  --graph-ok: #4ade80;
+  --graph-pending: #edce91;
+  --selection-bg: #3d674e;
+  --selection-text: #ffffff;
+}
+}

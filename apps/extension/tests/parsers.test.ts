@@ -76,6 +76,17 @@ describe('parseSerp', () => {
     expect(extractBlogId('https://blog.naver.com/abc_123/223')).toBe('abc_123');
     expect(extractBlogId('https://cafe.naver.com/xyz')).toBe('');
   });
+
+  it('caps the explicit current-page competitor sample at ten unique results', () => {
+    const items = Array.from({ length: 12 }, (_, index) => (
+      `<div class="fds-ugc-block-mod"><a class="fds-comps-right-image-text-title" href="https://blog.naver.com/writer/${index}">결과 ${index}</a></div>`
+    )).join('');
+    const doc = new DOMParser().parseFromString(`<input id="query" value="표본" />${items}`, 'text/html');
+    const parsed = parseSerp(doc, SERP_URL);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.results).toHaveLength(10);
+    expect(parsed.results.at(-1)?.rank).toBe(10);
+  });
 });
 
 describe('parseBlogPost', () => {

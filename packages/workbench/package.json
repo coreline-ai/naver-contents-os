@@ -1,0 +1,20 @@
+{
+  "name": "@ncos/workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./performance": "./src/PerformancePanels.tsx",
+    "./performance-import": "./src/performance-import.ts"
+  },
+  "dependencies": {
+    "@ncos/core-client": "workspace:*",
+    "@ncos/contracts": "workspace:*",
+    "@tanstack/react-query": "^5.62.0",
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0"
+  }
+}

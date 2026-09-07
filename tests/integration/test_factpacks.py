@@ -146,7 +146,7 @@ class CapturingLLM:
     def __init__(self):
         self.prompts: list[str] = []
 
-    def generate(self, prompt: str, *, system: str = "") -> str:
+    def generate(self, prompt: str, *, system: str = "", max_tokens: int | None = None) -> str:
         self.prompts.append(prompt)
         return "제목: 승인 근거 초안\n\n검토된 내용입니다."
 
@@ -248,4 +248,48 @@ def test_factpack_rest_create_get_and_append(tmp_path, monkeypatch):
     fetched = client.get(f"/v1/factpacks/{pack['fact_pack_id']}", headers=headers)
     assert fetched.status_code == 200
     assert len(fetched.json()["versions"]) == 2
+    stale = client.post(
+        f"/v1/factpacks/{pack['fact_pack_id']}/versions",
+        json={"selected_evidence_ids": [evidence_id], "status": "approved", "expected_version": 1},
+        headers=headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "factpack_version_conflict"
+    assert len(client.get(f"/v1/factpacks/{pack['fact_pack_id']}", headers=headers).json()["versions"]) == 2
     deps.reset_caches()
+
+
+def test_factpack_stale_approval_keeps_immutable_history(sessions):
+    from app.errors import FactPackVersionConflict
+
+    service = FactPackService(sessions)
+    pack = service.create(seed_snapshot(sessions))
+    evidence_id = pack['versions'][-1]['evidence'][0]['id']
+    approved = service.append_version(pack['fact_pack_id'], selected_evidence_ids=[evidence_id], status='approved', expected_version=1)
+    assert approved['latest_version'] == 2
+    with pytest.raises(FactPackVersionConflict):
+        service.append_version(pack['fact_pack_id'], selected_evidence_ids=[], status='draft', expected_version=1)
+    assert service.get(pack['fact_pack_id']) == approved
+
+
+def test_factpack_concurrent_approval_has_one_winner(sessions):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from app.errors import FactPackVersionConflict
+
+    service = FactPackService(sessions)
+    pack = service.create(seed_snapshot(sessions))
+    evidence_id = pack['versions'][-1]['evidence'][0]['id']
+    barrier = Barrier(2)
+
+    def approve(_):
+        barrier.wait(timeout=5)
+        try:
+            service.append_version(pack['fact_pack_id'], selected_evidence_ids=[evidence_id], status='approved', expected_version=1)
+            return 'saved'
+        except FactPackVersionConflict:
+            return 'conflict'
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(approve, range(2))) == ['conflict', 'saved']
+    assert len(service.get(pack['fact_pack_id'])['versions']) == 2

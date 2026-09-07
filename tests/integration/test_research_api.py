@@ -22,6 +22,9 @@ class FakeResearchService:
     def rising(self, **kwargs):
         return {**kwargs, "run_id": 1, "candidates": []}
 
+    def recent_rising(self, *, limit=8):
+        return {"runs": [{"run_id": 4}], "read_only": True, "limit": limit}
+
     def latest_rising(self, **kwargs):
         return {"run": {**kwargs, "run_id": 1}}
 
@@ -113,3 +116,13 @@ def test_suggestion_and_rising_routes_validate_mode_boundaries(client):
         "/v1/research/rising/latest?mode=general&seed=러닝화", headers=headers()
     )
     assert latest.status_code == 200 and latest.json()["run"]["run_id"] == 1
+
+
+def test_recent_rising_auth_limit_and_read_only_semantics(client):
+    route = "/v1/research/rising/recent"
+    assert client.get(route).status_code == 401
+    response = client.get(route + "?limit=3", headers=headers())
+    assert response.status_code == 200
+    assert response.json() == {"runs": [{"run_id": 4}], "read_only": True, "limit": 3}
+    for limit in (0, 13):
+        assert client.get(route + f"?limit={limit}", headers=headers()).status_code == 422

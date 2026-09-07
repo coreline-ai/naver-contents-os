@@ -1,5 +1,9 @@
 import type {
   AnalyzeResponse,
+  ArticleQuality,
+  BlogComposeRequest,
+  BlogComposeResponse,
+  BlogComposeStyle,
   DraftDetail,
   DraftGenerationMode,
   DraftSummary,
@@ -12,6 +16,7 @@ import type {
   RisingResponse,
   SerpObservation,
   SpecializedResponse,
+  TodayWorkItem,
 } from '@ncos/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -54,13 +59,50 @@ function safeExternalUrl(value: unknown): string {
   }
 }
 
+export function composeFailureHint(error: CoreError | null): string {
+  if (!error) return '';
+  const message = error.message.toLocaleLowerCase();
+  if (message.includes('품질 검사')) {
+    return '검사에 미달한 원고는 저장하지 않았으며 저품질 AI로 자동 전환하지 않았습니다.';
+  }
+  if (message.includes('사용량 한도') || message.includes('rate limit') || message.includes('429')) {
+    return 'Codex 사용량이 갱신된 뒤 다시 시도해 주세요. 다른 AI로 자동 전환하지 않습니다.';
+  }
+  if (message.includes('초과') || message.includes('timeout')) {
+    return '시간 초과 요청은 종료했습니다. 원고는 저장되지 않았으므로 다시 시도해 주세요.';
+  }
+  if (message.includes('codex login') || message.includes('로그인')) {
+    return '터미널에서 codex login을 완료한 뒤 AI 상태를 다시 확인해 주세요.';
+  }
+  return '실패한 결과는 원고로 저장하지 않았습니다.';
+}
+
 export default function App() {
   const settings = useSettings();
+  const initialParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const initialRecommendationId = Number(initialParams.get('recommendation_id')) || null;
+  const initialSourceDraftId = Number(initialParams.get('source_draft_id')) || null;
+  const remainingRecommendationId = useRef(initialRecommendationId);
   const [keyword, setKeyword] = useState('');
   const [serp, setSerp] = useState<SerpObservation | null>(null);
   const [serpNotice, setSerpNotice] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
+  const [blogIdDraft, setBlogIdDraft] = useState('');
+  const [defaultTagsDraft, setDefaultTagsDraft] = useState('');
+  const [composeKeyword, setComposeKeyword] = useState(initialParams.get('compose_keyword') ?? '');
+  const activeSourceDraftId = composeKeyword.trim() === (initialParams.get('compose_keyword') ?? '').trim() ? initialSourceDraftId : null;
+  const [composeNotes, setComposeNotes] = useState(initialParams.get('compose_notes') ?? '');
+  const [composeStyle, setComposeStyle] = useState<BlogComposeStyle>(
+    ['auto', 'informational', 'review', 'product'].includes(initialParams.get('compose_style') ?? '')
+      ? initialParams.get('compose_style') as BlogComposeStyle
+      : 'auto',
+  );
+  const [composeLength, setComposeLength] = useState<2500 | 4000>(2500);
+  const [composeResult, setComposeResult] = useState<BlogComposeResponse | null>(null);
+  const [referenceImages, setReferenceImages] = useState<SpecializedResponse | null>(null);
+  const [referencePending, setReferencePending] = useState(false);
+  const [referenceError, setReferenceError] = useState('');
   const [draft, setDraft] = useState<DraftDetail | null>(null);
   const [factPack, setFactPack] = useState<FactPack | null>(null);
   const [factPackSelection, setFactPackSelection] = useState<string[]>([]);
@@ -102,7 +144,9 @@ export default function App() {
   }, []);
   useEffect(() => {
     setTokenDraft(settings.token);
-  }, [settings.token]);
+    setBlogIdDraft(settings.blogId);
+    setDefaultTagsDraft(settings.defaultTags);
+  }, [settings.token, settings.blogId, settings.defaultTags]);
 
   const client = useMemo(
     () => new CoreClient(settings.coreUrl, settings.token),
@@ -119,6 +163,22 @@ export default function App() {
     queryKey: ['recent-drafts', settings.coreUrl, settings.token],
     queryFn: () => client.listDrafts({ limit: 3 }),
     enabled: settings.loaded && !!settings.token && handshake.isSuccess,
+  });
+  const todayTasks = useQuery({
+    queryKey: ['sidepanel-today-work', settings.coreUrl, settings.token],
+    queryFn: () => client.todayWork(3),
+    enabled: settings.loaded && !!settings.token && handshake.isSuccess,
+  });
+  const sourceImprovementDraft = useQuery({
+    queryKey: ['performance-source-draft', settings.coreUrl, settings.token, activeSourceDraftId],
+    queryFn: () => client.getDraft(activeSourceDraftId!),
+    enabled: settings.loaded && !!settings.token && handshake.isSuccess && !!activeSourceDraftId,
+  });
+  const llmStatus = useQuery({
+    queryKey: ['llm-status', settings.coreUrl, settings.token],
+    queryFn: () => client.llmStatus(),
+    enabled: settings.loaded && !!settings.token && handshake.isSuccess,
+    refetchInterval: 30_000,
   });
 
   useEffect(() => {
@@ -234,13 +294,41 @@ export default function App() {
     },
   });
 
+  const composeBlog = useMutation<
+    { composed: BlogComposeResponse; detail: DraftDetail },
+    CoreError,
+    BlogComposeRequest & { recommendationId: number | null }
+  >({
+    mutationFn: async ({ recommendationId: _recommendationId, ...input }) => {
+      const composed = await client.composeBlog(input);
+      const detail = await client.getDraft(composed.draft.draft_id);
+      return { composed, detail };
+    },
+    onSuccess: ({ composed, detail }, input) => {
+      setComposeResult(composed);
+      setDraft(detail);
+      setKeyword(composed.keyword);
+      setReferenceImages(null);
+      setReferenceError('');
+      void rememberRecentKeyword(composed.keyword).then(setRecentKeywords);
+      void recentDrafts.refetch();
+      if (input.recommendationId) {
+        remainingRecommendationId.current = null;
+        void client.updatePerformanceRecommendation(input.recommendationId, 'done')
+          .then(() => todayTasks.refetch())
+          .catch(() => undefined);
+      }
+    },
+  });
+
   const addDraftVersion = useMutation<
     DraftDetail,
     CoreError,
     { draftId: number; title: string; body: string; note: string; requestId: number }
   >({
     mutationFn: async ({ draftId, title, body, note }) => {
-      await client.addDraftVersion(draftId, { title, body, note });
+      if (!draft || draft.draft_id !== draftId) throw new CoreError(409, 'draft_version_conflict', '선택한 원고가 변경되었습니다. 원고를 다시 확인하세요.');
+      await client.addDraftVersion(draftId, { title, body, note, expected_version: draft.versions.at(-1)?.version });
       return client.getDraft(draftId);
     },
     onSuccess: (data, variables) => {
@@ -547,14 +635,84 @@ export default function App() {
     setBlogInspection(parsed?.found ? parsed : null);
   }
 
+  function openPerformanceDetails() {
+    void browser.tabs.create({ url: browser.runtime.getURL('/research.html?view=my-performance') });
+  }
+
+  function handleTodayTask(item: TodayWorkItem) {
+    if ((item.action === 'resume_draft' || item.action === 'inspect_error') && item.draft_id) {
+      void resumeDraft(item.draft_id, item.publish_job_id);
+      return;
+    }
+    if (item.action === 'open_performance') {
+      openPerformanceDetails();
+      return;
+    }
+    const query = new URLSearchParams({ keyword: item.keyword });
+    void browser.tabs.create({ url: browser.runtime.getURL(`/research.html?${query.toString()}`) });
+  }
+
+  function runCompleteCompose() {
+    const normalized = composeKeyword.trim();
+    const matchesHandoff = normalized === (initialParams.get('compose_keyword') ?? '').trim();
+    if (!normalized || composeBlog.isPending || !llmStatus.data?.ready) return;
+    ++analysisEpoch.current;
+    ++draftEpoch.current;
+    analyze.reset();
+    createDraft.reset();
+    addDraftVersion.reset();
+    startPublishJob.reset();
+    setResult(null);
+    setDraft(null);
+    setFactPack(null);
+    setPublishJobId(null);
+    setComposeResult(null);
+    setReferenceImages(null);
+    setReferenceError('');
+    composeBlog.mutate({
+      keyword: normalized,
+      style: composeStyle,
+      user_notes: composeNotes,
+      target_chars: composeLength,
+      allow_sensitive_unknown: settings.allowLlmWhenSensitiveUnknown,
+      force_refresh: false,
+      source_draft_id: matchesHandoff ? activeSourceDraftId : null,
+      source_draft_mode: matchesHandoff && initialParams.get('source_draft_mode') === 'followup' ? 'followup' : 'revision',
+      recommendationId: matchesHandoff ? remainingRecommendationId.current : null,
+    });
+  }
+
+  async function findReferenceImages() {
+    const target = composeResult?.keyword ?? draft?.keyword ?? composeKeyword.trim();
+    if (!target || referencePending) return;
+    setReferencePending(true);
+    setReferenceError('');
+    try {
+      setReferenceImages(await client.specialized(target, 'image'));
+    } catch (error) {
+      setReferenceImages(null);
+      setReferenceError(
+        error instanceof CoreError
+          ? `${error.code}: ${error.message}`
+          : '참고 사진을 불러오지 못했습니다.',
+      );
+    } finally {
+      setReferencePending(false);
+    }
+  }
+
   const connected = handshake.isSuccess;
+  const codexReady = llmStatus.data?.ready && llmStatus.data.engine === 'codex_cli';
   const currentAnalysisMutation = analyze.variables?.requestId === analysisEpoch.current;
   const currentDraftMutation = createDraft.variables?.requestId === draftEpoch.current;
 
   return (
-    <div className="min-h-screen bg-slate-50 p-3 text-sm text-slate-900">
+    <div className="min-h-screen bg-[#f6f8f5] p-3 text-sm text-[#102a2e]">
       <header className="flex items-center justify-between">
-        <h1 className="text-base font-bold">Naver Content OS</h1>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-700">Naver Content OS</p>
+          <h1 className="text-base font-bold">블로그 글 자동 작성</h1>
+        </div>
         <button
           className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-200"
           onClick={() => setShowSettings((v) => !v)}
@@ -574,15 +732,6 @@ export default function App() {
               : 'Local Core 연결 안 됨 (서버 실행·토큰 확인)'}
       </div>
 
-      {connected && (
-        <RecentDraftsCard
-          items={recentDrafts.data?.items ?? []}
-          loading={recentDrafts.isFetching || resumePending}
-          error={resumeError}
-          onOpen={(item) => void resumeDraft(item.draft_id, item.latest_job_id)}
-        />
-      )}
-
       {showSettings && (
         <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
           <label className="block text-xs font-medium text-slate-600">Local Core 토큰</label>
@@ -593,11 +742,29 @@ export default function App() {
             placeholder="data/local_core_token.txt 값"
             className="mt-1 w-full rounded border border-slate-300 px-2 py-1"
           />
+          <label className="mt-3 block text-xs font-medium text-slate-600">네이버 블로그 ID</label>
+          <input
+            value={blogIdDraft}
+            onChange={(event) => setBlogIdDraft(event.target.value)}
+            placeholder="예: sence4u"
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1"
+          />
+          <label className="mt-3 block text-xs font-medium text-slate-600">기본 태그</label>
+          <input
+            value={defaultTagsDraft}
+            onChange={(event) => setDefaultTagsDraft(event.target.value)}
+            placeholder="태그1, 태그2"
+            className="mt-1 w-full rounded border border-slate-300 px-2 py-1"
+          />
           <button
             className="mt-2 rounded bg-slate-900 px-3 py-1 text-xs font-medium text-white"
-            onClick={() => void settings.save({ token: tokenDraft }).then(() => setShowSettings(false))}
+            onClick={() => void settings.save({
+              token: tokenDraft,
+              blogId: blogIdDraft.trim(),
+              defaultTags: defaultTagsDraft.trim(),
+            }).then(() => setShowSettings(false))}
           >
-            저장
+            설정 저장
           </button>
           <label className="mt-3 flex items-start gap-2 rounded bg-slate-50 p-2 text-xs text-slate-600">
             <input
@@ -618,6 +785,199 @@ export default function App() {
         </section>
       )}
 
+      <section aria-labelledby="compose-title" className="mt-3 overflow-hidden rounded-2xl border border-[#dce5e0] bg-white shadow-[0_10px_30px_rgba(16,42,46,0.08)]">
+        <div className="border-b border-[#dce5e0] bg-gradient-to-br from-[#102a2e] to-[#19483f] px-4 py-4 text-white">
+          <p className="text-[10px] font-semibold tracking-[0.15em] text-emerald-200">STEP 1 · 주제만 입력하세요</p>
+          <h2 id="compose-title" className="mt-1 text-xl font-bold tracking-tight">오늘 쓸 글은 무엇인가요?</h2>
+          <p className="mt-1 text-xs leading-5 text-emerald-50/80">자료를 확인하고 완성된 원고까지 한 번에 만듭니다.</p>
+        </div>
+        <div className="p-4">
+          <label className="block text-xs font-semibold text-[#102a2e]" htmlFor="compose-keyword">글 주제</label>
+          <input
+            id="compose-keyword"
+            value={composeKeyword}
+            onChange={(event) => setComposeKeyword(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') runCompleteCompose(); }}
+            placeholder="예: 제주도 가족여행 준비물"
+            maxLength={100}
+            className="mt-1.5 w-full rounded-xl border border-[#bfd0c8] bg-[#fbfcfa] px-3 py-3 text-sm font-medium outline-none transition focus:border-[#00a86b] focus:ring-2 focus:ring-emerald-100"
+          />
+
+          <label className="mt-4 block text-xs font-semibold text-[#102a2e]" htmlFor="compose-notes">
+            꼭 넣을 내용 <span className="font-normal text-slate-400">선택</span>
+          </label>
+          <textarea
+            id="compose-notes"
+            value={composeNotes}
+            onChange={(event) => setComposeNotes(event.target.value)}
+            placeholder="직접 경험한 내용, 장소, 제품명, 가격 등을 적어주세요. 없는 경험은 AI가 만들지 않습니다."
+            maxLength={2000}
+            className="mt-1.5 min-h-20 w-full resize-y rounded-xl border border-[#dce5e0] bg-[#fbfcfa] p-3 text-xs leading-5 outline-none focus:border-[#00a86b] focus:ring-2 focus:ring-emerald-100"
+          />
+
+          <div className="mt-4">
+            <p className="text-xs font-semibold">글 스타일</p>
+            <div className="mt-1.5 grid grid-cols-4 gap-1" aria-label="글 스타일">
+              {([
+                ['auto', '자동'],
+                ['informational', '정보형'],
+                ['review', '후기형'],
+                ['product', '구매가이드'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={composeStyle === value}
+                  className={`min-w-0 rounded-lg px-1 py-2 text-[11px] font-semibold transition ${composeStyle === value ? 'bg-[#102a2e] text-white' : 'bg-[#edf2ef] text-slate-600 hover:bg-[#dce5e0]'}`}
+                  onClick={() => setComposeStyle(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between rounded-xl bg-[#edf2ef] px-3 py-2">
+            <div>
+              <p className="text-xs font-semibold">글 길이</p>
+              <p className="text-[10px] text-slate-500">읽기 좋은 기본값은 2,500자입니다.</p>
+            </div>
+            <div className="flex rounded-lg bg-white p-0.5">
+              {([2500, 4000] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={composeLength === value}
+                  onClick={() => setComposeLength(value)}
+                  className={`rounded-md px-2 py-1 text-[10px] font-semibold ${composeLength === value ? 'bg-[#00a86b] text-white' : 'text-slate-500'}`}
+                >
+                  {value.toLocaleString()}자
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {activeSourceDraftId && (
+            <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] text-indigo-900">
+              <p className="font-semibold">기존 Draft를 참고해 개선합니다.</p>
+              {sourceImprovementDraft.isFetching && <p className="mt-1 text-indigo-700">최신 원고를 불러오는 중…</p>}
+              {sourceImprovementDraft.data && <p className="mt-1 text-indigo-700">#{sourceImprovementDraft.data.draft_id} · {sourceImprovementDraft.data.title} · v{sourceImprovementDraft.data.versions.at(-1)?.version ?? 1}</p>}
+              {sourceImprovementDraft.isError && <p className="mt-1 text-rose-700">기존 Draft를 확인하지 못해 생성을 시작할 수 없습니다.</p>}
+              <p className="mt-1 text-[10px] text-indigo-600">결과는 기존 원고를 덮어쓰지 않고 새 Draft로 저장됩니다.</p>
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="mt-4 w-full rounded-xl bg-[#00a86b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_18px_rgba(0,168,107,0.24)] transition hover:bg-[#00945f] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+            disabled={!composeKeyword.trim() || !connected || !llmStatus.data?.ready || composeBlog.isPending || (!!activeSourceDraftId && !sourceImprovementDraft.data)}
+            onClick={runCompleteCompose}
+          >
+            {composeBlog.isPending ? '완성 글을 만들고 있어요…' : '완성 글 만들기'}
+          </button>
+
+          {composeBlog.isPending && (
+            <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50 p-3" role="status">
+              <div className="h-1.5 overflow-hidden rounded-full bg-emerald-100">
+                <div className="h-full w-1/2 animate-pulse rounded-full bg-[#00a86b]" />
+              </div>
+              <div className="mt-2 grid grid-cols-4 gap-1 text-center text-[9px] font-medium text-emerald-800">
+                <span>자료 확인</span><span>글 작성</span><span>품질 검사</span><span>완료</span>
+              </div>
+              {codexReady && (
+                <p className="mt-2 text-center text-[10px] leading-4 text-emerald-800">
+                  Codex가 완성 원고를 작성 중입니다. 중복 실행은 자동으로 막습니다.
+                </p>
+              )}
+            </div>
+          )}
+
+          {!composeBlog.isPending && connected && llmStatus.isFetching && (
+            <p className="mt-2 text-[11px] text-slate-500">글쓰기 AI 준비 상태를 확인하고 있습니다…</p>
+          )}
+          {!composeBlog.isPending && connected && llmStatus.data?.ready && (
+            <p className="mt-2 text-[11px] leading-4 text-slate-500">
+              {codexReady
+                ? `Codex 고품질 AI 연결됨 · ${llmStatus.data.auth === 'chatgpt' ? 'ChatGPT 로그인' : '인증 확인됨'}`
+                : 'AI 모델 연결됨'}
+              {' · '}생성 원고는 자동 검사 후 표시됩니다.
+            </p>
+          )}
+          {!composeBlog.isPending && connected && llmStatus.data && !llmStatus.data.ready && (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              <p className="font-semibold">글쓰기 AI를 준비해야 합니다.</p>
+              <p className="mt-1">{llmStatus.data.message}</p>
+              <p className="mt-1 text-[11px] text-amber-700">{llmStatus.data.action}</p>
+              <button className="mt-2 rounded-lg border border-amber-300 bg-white px-2 py-1 text-[11px] font-semibold" onClick={() => void llmStatus.refetch()}>다시 확인</button>
+            </div>
+          )}
+          {composeBlog.isError && (
+            <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800" role="alert">
+              <p className="font-semibold">완성 글을 만들지 못했습니다.</p>
+              <p className="mt-1">{composeBlog.error.message}</p>
+              <p className="mt-1 text-[11px] leading-4 text-rose-700">{composeFailureHint(composeBlog.error)}</p>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {connected && (todayTasks.isFetching || (todayTasks.data?.items.length ?? 0) > 0) && (
+        <SidepanelTodayWork
+          items={todayTasks.data?.items ?? []}
+          loading={todayTasks.isFetching}
+          onAction={handleTodayTask}
+          onDetails={openPerformanceDetails}
+        />
+      )}
+
+      {draft && (
+        <SimpleDraftCard
+          draft={draft}
+          quality={composeResult?.quality ?? null}
+          suggestedTags={composeResult?.suggested_tags ?? []}
+          savingVersion={addDraftVersion.isPending}
+          versionError={addDraftVersion.error?.message ?? ''}
+          onSaveVersion={(title, body, note) => addDraftVersion.mutate({
+            draftId: draft.draft_id,
+            title,
+            body,
+            note,
+            requestId: draftEpoch.current,
+          })}
+          defaultBlogId={settings.blogId}
+          defaultTags={settings.defaultTags}
+          onSavePublishSettings={(blogId, tags) => settings.save({ blogId, defaultTags: tags })}
+          startingPublish={startPublishJob.isPending}
+          publishError={startPublishJob.error?.message ?? publishJob.error?.message ?? ''}
+          publishJob={publishJob.data ?? startPublishJob.data ?? null}
+          onPublish={(blogId, tags) => startPublishJob.mutate({
+            draftId: draft.draft_id,
+            blogId,
+            tags,
+            requestId: draftEpoch.current,
+          })}
+          referenceImages={referenceImages}
+          referencePending={referencePending}
+          referenceError={referenceError}
+          onFindImages={() => void findReferenceImages()}
+          onRegenerate={() => runCompleteCompose()}
+        />
+      )}
+
+      {connected && (
+        <RecentDraftsCard
+          items={recentDrafts.data?.items ?? []}
+          loading={recentDrafts.isFetching || resumePending}
+          error={resumeError}
+          onOpen={(item) => void resumeDraft(item.draft_id, item.latest_job_id)}
+        />
+      )}
+
+      <details className="mt-4 rounded-xl border border-[#dce5e0] bg-white">
+        <summary className="cursor-pointer list-none px-3 py-3 text-xs font-semibold text-slate-600 marker:hidden">
+          상세 도구 <span className="font-normal text-slate-400">· 키워드 분석, 급상승, FactPack</span>
+        </summary>
+        <div className="border-t border-[#dce5e0] p-3 pt-0">
       <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
         <div className="flex gap-2">
           <div className="relative min-w-0 flex-1">
@@ -915,7 +1275,47 @@ export default function App() {
           onRegister={(input) => void registerPublished(input)}
         />
       )}
+        </div>
+      </details>
     </div>
+  );
+}
+
+export function SidepanelTodayWork({
+  items,
+  loading,
+  onAction,
+  onDetails,
+}: {
+  items: TodayWorkItem[];
+  loading: boolean;
+  onAction: (item: TodayWorkItem) => void;
+  onDetails: () => void;
+}) {
+  const labels: Record<TodayWorkItem['action'], string> = {
+    inspect_error: '오류 확인',
+    resume_draft: '이어쓰기',
+    register_publication: '발행 확인',
+    refresh_data: '자료 갱신',
+    open_analysis: '분석 보기',
+    open_performance: '성과 개선',
+  };
+  return (
+    <section className="mt-3 rounded-xl border border-[#dce5e0] bg-white p-3" aria-label="오늘 우선 작업">
+      <div className="flex items-center justify-between gap-2">
+        <div><h2 className="text-xs font-bold">오늘 우선 작업</h2><p className="text-[10px] text-slate-400">중요한 작업을 최대 3개만 보여줍니다.</p></div>
+        <button className="text-[10px] font-semibold text-emerald-700 underline" onClick={onDetails}>내 성과 자세히</button>
+      </div>
+      {loading && items.length === 0 && <p className="mt-2 text-[10px] text-slate-400">확인 중…</p>}
+      <div className="mt-2 space-y-1.5">
+        {items.slice(0, 3).map((item) => (
+          <article key={item.id} className="flex items-center gap-2 rounded-lg bg-slate-50 p-2">
+            <div className="min-w-0 flex-1"><p className="truncate text-[11px] font-semibold">{item.title}</p><p className="truncate text-[9px] text-slate-400">{item.reason}</p></div>
+            <button className="shrink-0 rounded bg-[#102a2e] px-2 py-1 text-[9px] font-semibold text-white" onClick={() => onAction(item)}>{labels[item.action]}</button>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1387,6 +1787,242 @@ export function PlanCard({
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+const PUBLISH_STAGE_LABEL: Record<string, string> = {
+  '': '작업 대기',
+  browser_attach: '브라우저 연결',
+  health_check: '브라우저 확인',
+  prepare_editor: '에디터 열기',
+  input_title: '제목 입력',
+  input_body: '본문 입력',
+  input_tags: '태그 입력',
+  draft_save: '임시저장 확인',
+  publisher_runtime: '작업 확인',
+};
+
+function splitTags(value: string): string[] {
+  return value.split(',').map((tag) => tag.trim()).filter(Boolean).slice(0, 10);
+}
+
+export function SimpleDraftCard({
+  draft,
+  quality,
+  suggestedTags,
+  savingVersion,
+  versionError,
+  onSaveVersion,
+  defaultBlogId,
+  defaultTags,
+  onSavePublishSettings,
+  startingPublish,
+  publishError,
+  publishJob,
+  onPublish,
+  referenceImages,
+  referencePending,
+  referenceError,
+  onFindImages,
+  onRegenerate,
+}: {
+  draft: DraftDetail;
+  quality: ArticleQuality | null;
+  suggestedTags: string[];
+  savingVersion: boolean;
+  versionError: string;
+  onSaveVersion: (title: string, body: string, note: string) => void;
+  defaultBlogId: string;
+  defaultTags: string;
+  onSavePublishSettings: (blogId: string, tags: string) => Promise<void>;
+  startingPublish: boolean;
+  publishError: string;
+  publishJob: PublishJob | null;
+  onPublish: (blogId: string, tags: string[]) => void;
+  referenceImages: SpecializedResponse | null;
+  referencePending: boolean;
+  referenceError: string;
+  onFindImages: () => void;
+  onRegenerate: () => void;
+}) {
+  const latest = draft.versions.at(-1)!;
+  const [title, setTitle] = useState(latest.title);
+  const [body, setBody] = useState(latest.body);
+  const [note, setNote] = useState('');
+  const [blogId, setBlogId] = useState(defaultBlogId);
+  const [tagsText, setTagsText] = useState(defaultTags || suggestedTags.join(', '));
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  useEffect(() => {
+    const current = draft.versions.at(-1)!;
+    setTitle(current.title);
+    setBody(current.body);
+    setNote('');
+  }, [draft]);
+  useEffect(() => {
+    setBlogId(defaultBlogId);
+    setTagsText(defaultTags || suggestedTags.join(', '));
+    setSettingsSaved(false);
+  }, [draft.draft_id, defaultBlogId, defaultTags, suggestedTags.join('|')]);
+
+  const dirty = title !== latest.title || body !== latest.body;
+  const validBlogId = /^[A-Za-z0-9_-]+$/.test(blogId);
+  const canPublish = validBlogId && !dirty && !startingPublish;
+  const imageRows = referenceImages?.items?.slice(0, 5) ?? [];
+
+  function confirmPublish() {
+    if (!canPublish) return;
+    if (!window.confirm('최신 원고를 네이버 SmartEditor에 입력하고 임시저장할까요? 공개 발행은 하지 않습니다.')) return;
+    onPublish(blogId, splitTags(tagsText));
+  }
+
+  return (
+    <section className="mt-4 rounded-2xl border border-emerald-200 bg-white p-4 shadow-[0_10px_30px_rgba(16,42,46,0.07)]" aria-labelledby="complete-draft-title">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-semibold tracking-[0.14em] text-emerald-700">STEP 2 · 확인하고 다듬기</p>
+          <h2 id="complete-draft-title" className="mt-1 text-lg font-bold">완성된 글</h2>
+        </div>
+        {quality && (
+          <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-800">
+            자동 검사 {quality.score}점
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-[11px] text-slate-500">
+        {body.length.toLocaleString()}자 · v{latest.version} · {draft.model || draft.provider}
+        {quality?.repair_attempted ? ' · 자동 보정 완료' : ''}
+      </p>
+      {quality && (
+        <div className="mt-2">
+          <div className="flex flex-wrap gap-1 text-[10px]">
+            <span className="rounded-full bg-[#edf2ef] px-2 py-1">길이 확인</span>
+            <span className="rounded-full bg-[#edf2ef] px-2 py-1">키워드 {quality.keyword_count}회</span>
+            <span className="rounded-full bg-[#edf2ef] px-2 py-1">문단 {quality.paragraph_count}개</span>
+          </div>
+          <p className="mt-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[10px] leading-4 text-amber-800">
+            자동 검사는 분량·반복·민감정보 노출을 확인합니다. 사실 정확성과 표현은 임시저장 전에 직접 확인해 주세요.
+          </p>
+        </div>
+      )}
+
+      <label className="mt-4 block text-xs font-semibold" htmlFor="simple-draft-title">제목</label>
+      <input
+        id="simple-draft-title"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        className="mt-1.5 w-full rounded-xl border border-[#bfd0c8] px-3 py-2 text-sm font-semibold outline-none focus:border-[#00a86b] focus:ring-2 focus:ring-emerald-100"
+      />
+      <label className="mt-3 block text-xs font-semibold" htmlFor="simple-draft-body">본문</label>
+      <textarea
+        id="simple-draft-body"
+        value={body}
+        onChange={(event) => setBody(event.target.value)}
+        className="mt-1.5 min-h-80 w-full resize-y rounded-xl border border-[#bfd0c8] bg-[#fffef9] p-3 text-[13px] leading-6 outline-none focus:border-[#00a86b] focus:ring-2 focus:ring-emerald-100"
+      />
+      <div className="mt-2 flex gap-2">
+        <input
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="수정 메모"
+          className="min-w-0 flex-1 rounded-lg border border-[#dce5e0] px-2 py-1.5 text-xs"
+        />
+        <button
+          className="rounded-lg bg-[#102a2e] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+          disabled={!dirty || !title.trim() || !body.trim() || savingVersion}
+          onClick={() => onSaveVersion(title, body, note || '사용자 수정')}
+        >
+          {savingVersion ? '저장 중…' : '수정 저장'}
+        </button>
+      </div>
+      {dirty && <p className="mt-1 text-[10px] text-amber-700">수정 내용을 저장해야 네이버 임시저장을 시작할 수 있습니다.</p>}
+      {versionError && <p className="mt-1 text-xs text-rose-700">수정 저장 오류: {versionError}</p>}
+
+      <div className="mt-4 grid grid-cols-2 gap-2 border-t border-[#dce5e0] pt-4">
+        <button className="rounded-xl border border-[#bfd0c8] px-3 py-2 text-xs font-semibold text-[#102a2e]" onClick={onRegenerate}>다시 작성</button>
+        <button className="rounded-xl border border-[#bfd0c8] px-3 py-2 text-xs font-semibold text-[#102a2e] disabled:opacity-40" disabled={referencePending} onClick={onFindImages}>
+          {referencePending ? '사진 찾는 중…' : '참고 사진 찾기'}
+        </button>
+      </div>
+
+      {(referenceImages || referenceError) && (
+        <div className="mt-3 rounded-xl bg-[#f6f8f5] p-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold">참고 사진</h3>
+            {referenceImages && <span className="text-[10px] text-slate-400">최대 5개</span>}
+          </div>
+          <p className="mt-1 text-[10px] leading-4 text-amber-700">자동 삽입되지 않습니다. 사용 전 원 출처의 이용 권리를 확인하세요.</p>
+          {referenceImages?.status === 'unconfigured' && <p className="mt-2 text-xs text-slate-600">NAVER 이미지 검색 API가 설정되지 않았습니다.</p>}
+          {imageRows.length > 0 && (
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {imageRows.map((row, index) => (
+                <a
+                  key={`${index}-${String(row.link ?? '')}`}
+                  href={safeExternalUrl(row.link)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="overflow-hidden rounded-lg border border-[#dce5e0] bg-white"
+                >
+                  {Boolean(row.thumbnail) && <img src={safeExternalUrl(row.thumbnail)} alt="" className="h-24 w-full object-cover" />}
+                  <span className="block truncate px-2 py-1.5 text-[10px] font-medium text-sky-700">{String(row.title || '원본 보기')}</span>
+                </a>
+              ))}
+            </div>
+          )}
+          {referenceError && <p className="mt-2 text-xs text-rose-700">{referenceError}</p>}
+        </div>
+      )}
+
+      <div className="mt-4 rounded-xl border border-[#dce5e0] bg-[#f6f8f5] p-3">
+        <p className="text-[10px] font-semibold tracking-[0.14em] text-emerald-700">STEP 3 · 네이버로 보내기</p>
+        <h3 className="mt-1 text-sm font-bold">네이버 임시저장</h3>
+        <p className="mt-1 text-[10px] leading-4 text-slate-500">블로그 ID는 한 번 저장하면 다음 글부터 자동으로 사용합니다. 공개 발행은 하지 않습니다.</p>
+        <label className="mt-3 block text-[11px] font-semibold" htmlFor="simple-blog-id">네이버 블로그 ID</label>
+        <input
+          id="simple-blog-id"
+          value={blogId}
+          onChange={(event) => { setBlogId(event.target.value); setSettingsSaved(false); }}
+          placeholder="예: sence4u"
+          className="mt-1 w-full rounded-lg border border-[#bfd0c8] bg-white px-2 py-2 text-xs"
+        />
+        <label className="mt-2 block text-[11px] font-semibold" htmlFor="simple-blog-tags">태그</label>
+        <input
+          id="simple-blog-tags"
+          value={tagsText}
+          onChange={(event) => { setTagsText(event.target.value); setSettingsSaved(false); }}
+          placeholder="태그1, 태그2"
+          className="mt-1 w-full rounded-lg border border-[#bfd0c8] bg-white px-2 py-2 text-xs"
+        />
+        {!validBlogId && blogId.length > 0 && <p className="mt-1 text-[10px] text-rose-700">영문, 숫자, 밑줄, 하이픈만 입력할 수 있습니다.</p>}
+        <div className="mt-2 flex items-center justify-between">
+          <button
+            className="text-[10px] font-semibold text-emerald-700 disabled:text-slate-400"
+            disabled={!validBlogId}
+            onClick={() => void onSavePublishSettings(blogId.trim(), tagsText.trim()).then(() => setSettingsSaved(true))}
+          >
+            이 설정 기억하기
+          </button>
+          {settingsSaved && <span className="text-[10px] text-emerald-700">저장됨</span>}
+        </div>
+        <button
+          className="mt-3 w-full rounded-xl bg-[#102a2e] px-3 py-2.5 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-35"
+          disabled={!canPublish}
+          onClick={confirmPublish}
+        >
+          {startingPublish ? '네이버로 보내는 중…' : '네이버에 임시저장'}
+        </button>
+        {publishJob && (
+          <p className={`mt-2 rounded-lg px-2 py-2 text-xs ${publishJob.status === 'failed' ? 'bg-rose-50 text-rose-700' : publishJob.status === 'draft_saved' ? 'bg-emerald-100 text-emerald-800' : 'bg-sky-50 text-sky-700'}`}>
+            {publishJob.status === 'draft_saved'
+              ? '네이버 임시저장을 확인했습니다.'
+              : publishJob.status === 'failed'
+                ? `중단됨 · ${PUBLISH_STAGE_LABEL[publishJob.stage] ?? publishJob.stage}`
+                : `진행 중 · ${PUBLISH_STAGE_LABEL[publishJob.stage] ?? publishJob.stage}`}
+          </p>
+        )}
+        {publishError && <p className="mt-2 text-xs text-rose-700">임시저장 오류: {publishError}</p>}
+      </div>
     </section>
   );
 }

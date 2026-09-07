@@ -10,14 +10,16 @@ import base64
 import json
 from datetime import datetime
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models_db import Draft, DraftVersion, Keyword, KeywordSnapshot, PublishJob
+from app.errors import DraftVersionConflict
 from app.services.factpacks import FactPackService, render_approved_evidence
+from planner.article_quality import build_expansion_prompt, build_repair_prompt, evaluate_article
 from planner.templates import PROMPT_VERSION, SYSTEM_PROMPT, build_prompt
 from planner.types import BlogType
-from providers.llm.base import LLMProvider
+from providers.llm.base import LLMError, LLMProvider
 from publisher.markdown import clean_markdown
 
 TITLE_PREFIX = "제목:"
@@ -27,6 +29,40 @@ _DRAFT_TRANSITIONS = {
     "review_ready": frozenset({"editing", "archived"}),
     "archived": frozenset({"editing"}),
 }
+
+
+def output_token_budget(target_chars: int) -> int:
+    """Bound local-model output while leaving enough room for Korean prose."""
+
+    # JSON structured output must also encode newlines and punctuation. A
+    # ceiling below the visible character target can truncate an otherwise
+    # valid article and leave invalid JSON, so keep roughly 30% headroom. The
+    # prompt still asks for 90~115% of the requested length and the validator
+    # rejects excessive output.
+    return max(2400, min(5500, round(target_chars * 1.3)))
+
+
+def _generate_article(
+    llm: LLMProvider,
+    prompt: str,
+    *,
+    max_tokens: int,
+) -> str:
+    structured = getattr(llm, "generate_article", None)
+    if callable(structured):
+        return structured(prompt, system=SYSTEM_PROMPT, max_tokens=max_tokens)
+    return llm.generate(prompt, system=SYSTEM_PROMPT, max_tokens=max_tokens)
+
+
+def _clean_shortfall(quality, target_chars: int) -> bool:
+    return (
+        quality.char_count < max(1200, round(target_chars * 0.85))
+        and quality.checks["no_placeholders"]
+        and quality.checks["no_meta_commentary"]
+        and quality.checks["korean_ready"]
+        and quality.checks["variety_ready"]
+        and quality.keyword_count <= 12
+    )
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -85,6 +121,68 @@ class DraftService:
     def provider_name(self) -> str:
         return self._llm.name if self._llm is not None else "skeleton"
 
+    def readiness(self) -> dict:
+        """Resolve the configured model without generating or persisting content."""
+
+        if self._llm is None:
+            return {
+                "ready": False,
+                "provider": "unconfigured",
+                "model": "",
+                "message": "실제 AI 모델이 연결되지 않았습니다.",
+                "action": "설정에서 AI 모델을 연결한 뒤 다시 확인하세요.",
+                "engine": "unconfigured",
+                "auth": "missing",
+                "quality_tier": "none",
+            }
+        try:
+            resolver = getattr(self._llm, "resolve_model", None)
+            model = str(resolver() if callable(resolver) else getattr(self._llm, "model_name", ""))
+        except LLMError as exc:
+            metadata = self._readiness_metadata()
+            return {
+                "ready": False,
+                "provider": self.provider_name,
+                "model": "",
+                "message": str(exc),
+                "action": (
+                    "터미널에서 `codex login`을 실행한 뒤 다시 확인하세요."
+                    if self.provider_name == "codex_cli"
+                    else "AI 서버를 실행하고 사용할 모델이 설치되었는지 확인하세요."
+                ),
+                **metadata,
+            }
+        metadata = self._readiness_metadata()
+        is_codex = self.provider_name == "codex_cli"
+        return {
+            "ready": bool(model),
+            "provider": self.provider_name,
+            "model": model,
+            "message": (
+                "Codex 고품질 AI가 연결되었습니다. 생성 원고는 임시저장 전에 확인하세요."
+                if model and is_codex
+                else "AI 모델이 연결되었습니다. 생성 원고는 임시저장 전에 확인하세요."
+                if model
+                else "사용할 AI 모델을 찾지 못했습니다."
+            ),
+            "action": "" if model else "AI 모델을 하나 이상 설치하세요.",
+            **metadata,
+        }
+
+    def _readiness_metadata(self) -> dict[str, str]:
+        metadata = getattr(self._llm, "status_metadata", None)
+        if isinstance(metadata, dict):
+            return {
+                "engine": str(metadata.get("engine") or self.provider_name),
+                "auth": str(metadata.get("auth") or "unknown"),
+                "quality_tier": str(metadata.get("quality_tier") or "unknown"),
+            }
+        if self.provider_name == "ollama":
+            return {"engine": "ollama", "auth": "not_required", "quality_tier": "local"}
+        if self.provider_name == "openai_compat":
+            return {"engine": "openai_compat", "auth": "configured", "quality_tier": "external"}
+        return {"engine": self.provider_name, "auth": "unknown", "quality_tier": "unknown"}
+
     def _validate_snapshot(self, keyword_text: str, snapshot_id: int | None) -> None:
         """Reject invalid lineage before an external LLM call can consume time or quota."""
         if snapshot_id is None:
@@ -104,6 +202,9 @@ class DraftService:
         snapshot_id: int | None = None,
         fact_pack_id: int | None = None,
         fact_pack_version: int | None = None,
+        user_notes: str = "",
+        target_chars: int = 2500,
+        enforce_quality: bool = False,
     ) -> dict:
         blog_type = BlogType(plan_item["blog_type"])
         self._validate_snapshot(keyword_text, snapshot_id)
@@ -120,14 +221,97 @@ class DraftService:
                 blog_type=blog_type,
                 angle=plan_item.get("angle", ""),
                 questions=questions,
+                min_chars=target_chars,
+                user_notes=user_notes,
             )
             fact_context = render_approved_evidence(approved_evidence)
             if fact_context:
                 prompt = f"{prompt}\n\n{fact_context}"
-            generated = self._llm.generate(prompt, system=SYSTEM_PROMPT)
+            token_budget = output_token_budget(target_chars)
+            generated = _generate_article(
+                self._llm,
+                prompt,
+                max_tokens=token_budget,
+            )
             title, body = split_generated(generated, plan_item["title"])
+            quality = evaluate_article(
+                clean_markdown(title),
+                clean_markdown(body),
+                plan_item["target_keyword"],
+                target_chars=target_chars,
+            )
+            repair_attempted = False
+            if enforce_quality and not quality.passed:
+                repair_attempted = True
+                if _clean_shortfall(quality, target_chars):
+                    missing_chars = max(500, target_chars - quality.char_count)
+                    expansion_budget = max(900, min(token_budget, round(missing_chars * 1.5)))
+                    expanded = _generate_article(
+                        self._llm,
+                        build_expansion_prompt(
+                            title=title,
+                            body=body,
+                            keyword=plan_item["target_keyword"],
+                            target_chars=target_chars,
+                            round_index=0,
+                        ),
+                        max_tokens=expansion_budget,
+                    )
+                    _, extra_body = split_generated(expanded, "추가 본문")
+                    body = f"{body.rstrip()}\n\n{extra_body.lstrip()}"
+                else:
+                    repaired = _generate_article(
+                        self._llm,
+                        build_repair_prompt(
+                            title=title,
+                            body=body,
+                            keyword=plan_item["target_keyword"],
+                            target_chars=target_chars,
+                            issues=quality.issues,
+                        ),
+                        max_tokens=token_budget,
+                    )
+                    title, body = split_generated(repaired, plan_item["title"])
+                quality = evaluate_article(
+                    clean_markdown(title),
+                    clean_markdown(body),
+                    plan_item["target_keyword"],
+                    target_chars=target_chars,
+                )
+                # Some local models stop early even when explicitly asked for
+                # the missing length. At most two additional, bounded top-ups
+                # are cheaper and more reliable than another full rewrite.
+                for round_index in range(1, 3):
+                    if not _clean_shortfall(quality, target_chars):
+                        break
+                    missing_chars = max(500, target_chars - quality.char_count)
+                    top_up_budget = max(900, min(token_budget, round(missing_chars * 1.5)))
+                    top_up = _generate_article(
+                        self._llm,
+                        build_expansion_prompt(
+                            title=title,
+                            body=body,
+                            keyword=plan_item["target_keyword"],
+                            target_chars=target_chars,
+                            round_index=round_index,
+                        ),
+                        max_tokens=top_up_budget,
+                    )
+                    _, top_up_body = split_generated(top_up, "추가 본문")
+                    body = f"{body.rstrip()}\n\n{top_up_body.lstrip()}"
+                    quality = evaluate_article(
+                        clean_markdown(title),
+                        clean_markdown(body),
+                        plan_item["target_keyword"],
+                        target_chars=target_chars,
+                    )
+            if enforce_quality and not quality.passed:
+                summary = " ".join(quality.issues[:3])
+                raise LLMError(f"완성 글 품질 검사를 통과하지 못했습니다. {summary}")
         else:
             title, body = plan_item["title"], skeleton_body(blog_type)
+            quality = None
+            repair_attempted = False
         title = clean_markdown(title)
         body = clean_markdown(body)
         provider_name = self.provider_name
@@ -160,7 +344,7 @@ class DraftService:
             session.flush()
             session.add(DraftVersion(draft_id=draft.id, version=1, title=title, body=body, note="V1 원본"))
             session.commit()
-            return {
+            response = {
                 "draft_id": draft.id,
                 "version": 1,
                 "title": title,
@@ -172,9 +356,15 @@ class DraftService:
                 "model": model_name,
                 "prompt_version": PROMPT_VERSION,
             }
+            if quality is not None:
+                response["quality"] = quality.payload(repair_attempted=repair_attempted)
+            return response
 
-    def add_version(self, draft_id: int, title: str, body: str, note: str = "") -> dict:
+    def add_version(self, draft_id: int, title: str, body: str, note: str = "", expected_version: int | None = None) -> dict:
         with self._sessions() as session:
+            # Serialize the version check and append, including legacy clients.
+            # Checking before the transaction would still permit lost updates.
+            session.execute(text("BEGIN IMMEDIATE"))
             latest = session.scalar(
                 select(DraftVersion)
                 .where(DraftVersion.draft_id == draft_id)
@@ -182,6 +372,8 @@ class DraftService:
             )
             if latest is None:
                 raise ValueError(f"draft {draft_id} has no versions")
+            if expected_version is not None and latest.version != expected_version:
+                raise DraftVersionConflict("다른 화면에서 새 버전을 저장했습니다. 편집 내용은 유지하고 최신 원고와 비교한 뒤 다시 저장하세요.")
             next_version = latest.version + 1
             session.add(
                 DraftVersion(
@@ -360,6 +552,14 @@ class SqlJobStore:
             session.add(job)
             session.commit()
             return job.id
+
+    def latest(self, draft_id: int) -> dict | None:
+        with self._sessions() as session:
+            job_id = session.scalar(
+                select(PublishJob.id).where(PublishJob.draft_id == draft_id)
+                .order_by(PublishJob.id.desc()).limit(1)
+            )
+        return self.get(job_id) if job_id is not None else None
 
     def update(
         self, job_id: int, *, status: str, stage: str, error_code: str | None, detail: str, history_entry: dict

@@ -28,7 +28,7 @@
 | SERP 분석 | Content Script + DOM Parser |
 | Blog 분석 | Content Script + Parser Layer |
 | 콘텐츠 엔진 | Python Provider Layer |
-| 로컬 LLM | Ollama / OpenAI-compatible |
+| 콘텐츠 LLM | 공식 Codex CLI(기본) / Ollama / OpenAI-compatible |
 | SmartEditor | Extension Adapter 우선 |
 | 자동화 fallback | Playwright 또는 Selenium |
 | Scheduler | APScheduler |

@@ -13,6 +13,8 @@ from app.models_db import (
     Draft,
     DraftVersion,
     Keyword,
+    OwnedChannel,
+    PerformanceRecommendation,
     PublishedContent,
     PublishJob,
     WatchlistItem,
@@ -126,6 +128,25 @@ def test_reading_today_work_does_not_mutate_jobs_or_drafts(sessions):
     with sessions() as session:
         after = (session.query(Draft).count(), session.query(PublishJob).count(), session.query(PublishedContent).count())
     assert before == after
+
+
+def test_performance_recommendation_is_visible_but_never_auto_executes(sessions, monkeypatch):
+    from app.services import performance
+    monkeypatch.setattr(performance, "_utcnow", lambda: NOW)
+    from app.services.performance import PerformanceService
+    service = PerformanceService(sessions)
+    channel = service.create_channel(source="creator_advisor", display_name="내 블로그")
+    service.create_import(channel_id=channel["id"], source="creator_advisor", data_kind="content_performance",
+                          period_start=NOW.date() - timedelta(days=6), period_end=NOW.date(), grain="weekly",
+                          rows=[{"title": "성과 키워드", "impressions": 1000, "inflows": 1}])
+    with sessions() as session:
+        before = session.query(PerformanceRecommendation).count()
+    item = TodayWorkService(sessions, now=lambda: NOW).list(limit=3)["items"][0]
+    assert item["action"] == "open_performance"
+    assert item["source_type"] == "performance_recommendation"
+    with sessions() as session:
+        assert session.query(PerformanceRecommendation).count() == before
+        assert session.query(Draft).count() == 0
 
 
 def test_today_work_api_is_local_and_capped(tmp_path, monkeypatch):

@@ -14,10 +14,13 @@ from app.models_db import (
     Draft,
     DraftVersion,
     Keyword,
+    OwnedChannel,
+    PerformanceRecommendation,
     PublishedContent,
     PublishJob,
     WatchlistItem,
 )
+from app.services.performance import actionable_recommendation
 from app.services.published import build_content_state_index, publication_state
 from intelligence.keyword.models import compact
 
@@ -212,7 +215,41 @@ class TodayWorkService:
                     publish_job_id=job.id,
                 )
 
-            # 4. Explicitly registered public content older than 90 days.
+            # 4. Explainable post-publication performance improvements. Reading
+            # this queue never starts an LLM or changes recommendation state.
+            performance_rows = session.scalars(
+                select(PerformanceRecommendation)
+                .join(OwnedChannel, OwnedChannel.id == PerformanceRecommendation.channel_id)
+                .where(
+                    PerformanceRecommendation.status == "open",
+                    OwnedChannel.enabled.is_(True),
+                )
+                .order_by(
+                    PerformanceRecommendation.period_end.desc(),
+                    PerformanceRecommendation.id.desc(),
+                )
+            ).all()
+            for recommendation in performance_rows:
+                if not actionable_recommendation(session, recommendation, now=now):
+                    continue
+                publication = (
+                    session.get(PublishedContent, recommendation.published_content_id)
+                    if recommendation.published_content_id
+                    else None
+                )
+                add(
+                    priority=4,
+                    source_type="performance_recommendation",
+                    source_id=recommendation.id,
+                    keyword=recommendation.keyword,
+                    title=publication.title if publication else recommendation.keyword,
+                    reason=recommendation.reason,
+                    action="open_performance",
+                    published_content_id=recommendation.published_content_id,
+                    published_url=publication.canonical_url if publication else None,
+                )
+
+            # 5. Explicitly registered public content older than 90 days.
             publications = session.execute(
                 select(PublishedContent, Keyword)
                 .join(Keyword, Keyword.id == PublishedContent.keyword_id)
@@ -235,7 +272,7 @@ class TodayWorkService:
 
             content_states = build_content_state_index(session, now=now)
 
-            # 5a. Rising watchlist items without content. Partial/stale data only asks for refresh.
+            # 6a. Rising watchlist items without content. Partial/stale data only asks for refresh.
             watch_rows = session.execute(
                 select(WatchlistItem, Keyword)
                 .join(Keyword, Keyword.id == WatchlistItem.keyword_id)
@@ -277,7 +314,7 @@ class TodayWorkService:
                     stale=stale,
                 )
 
-            # 5b. Only the latest discovery run; missing evidence is never a writing signal.
+            # 6b. Only the latest discovery run; missing evidence is never a writing signal.
             discovery = session.scalar(
                 select(DiscoveryRun).order_by(
                     DiscoveryRun.created_at.desc(), DiscoveryRun.id.desc()
@@ -327,7 +364,7 @@ class TodayWorkService:
                         stale=stale,
                     )
 
-            # 6. Sanitized ad recommendations saved by an explicit account lookup.
+            # 7. Sanitized ad recommendations saved by an explicit account lookup.
             ad_snapshot = session.scalar(
                 select(AdPerformanceSnapshot).order_by(
                     AdPerformanceSnapshot.collected_at.desc(),

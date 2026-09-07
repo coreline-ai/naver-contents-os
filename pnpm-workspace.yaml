@@ -1,5 +1,8 @@
 packages:
   - apps/extension
+  - apps/web
+  - packages/core-client
+  - packages/workbench
   - packages/contracts
 allowBuilds:
   esbuild: true

@@ -13,6 +13,12 @@ importers:
       '@ncos/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@ncos/core-client':
+        specifier: workspace:*
+        version: link:../../packages/core-client
+      '@ncos/workbench':
+        specifier: workspace:*
+        version: link:../../packages/workbench
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.102.8(react@19.2.8)
@@ -54,7 +60,72 @@ importers:
         specifier: ^0.20.0
         version: 0.20.27(@types/node@26.4.0)(jiti@2.7.0)(rolldown@1.2.6)(rollup@4.63.1)
 
+  apps/web:
+    dependencies:
+      '@ncos/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@ncos/core-client':
+        specifier: workspace:*
+        version: link:../../packages/core-client
+      '@ncos/workbench':
+        specifier: workspace:*
+        version: link:../../packages/workbench
+      '@tanstack/react-query':
+        specifier: ^5.62.0
+        version: 5.102.8(react@19.2.8)
+      react:
+        specifier: ^19.1.0
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.1.0
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.1.0
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.1.0
+        version: 19.2.5(@types/react@19.2.18)
+      happy-dom:
+        specifier: ^16.0.0
+        version: 16.8.1
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)
+      vitest:
+        specifier: ^3.1.0
+        version: 3.2.7(@types/node@26.4.0)(happy-dom@16.8.1)(jiti@2.7.0)(lightningcss@1.33.0)
+
   packages/contracts: {}
+
+  packages/core-client:
+    dependencies:
+      '@ncos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/workbench:
+    dependencies:
+      '@ncos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@ncos/core-client':
+        specifier: workspace:*
+        version: link:../core-client
+      '@tanstack/react-query':
+        specifier: ^5.62.0
+        version: 5.102.8(react@19.2.8)
+      react:
+        specifier: ^19.1.0
+        version: 19.2.8
+    devDependencies:
+      '@types/react':
+        specifier: ^19.1.0
+        version: 19.2.18
 
 packages:
 
@@ -4424,6 +4495,19 @@ snapshots:
     optionalDependencies:
       '@types/node': 26.4.0
       esbuild: 0.27.7
+      fsevents: 2.3.3
+      jiti: 2.7.0
+
+  vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0):
+    dependencies:
+      lightningcss: 1.33.0
+      picomatch: 4.0.7
+      postcss: 8.5.26
+      rolldown: 1.2.6
+      tinyglobby: 0.2.17
+    optionalDependencies:
+      '@types/node': 26.4.0
+      esbuild: 0.28.2
       fsevents: 2.3.3
       jiti: 2.7.0
 

@@ -5,12 +5,16 @@ export interface Settings {
   coreUrl: string;
   token: string;
   allowLlmWhenSensitiveUnknown: boolean;
+  blogId: string;
+  defaultTags: string;
 }
 
 const DEFAULTS: Settings = {
   coreUrl: 'http://127.0.0.1:3719',
   token: '',
   allowLlmWhenSensitiveUnknown: true,
+  blogId: '',
+  defaultTags: '',
 };
 const STORAGE_KEY = 'ncos-settings';
 
@@ -32,6 +36,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
       coreUrl: get().coreUrl,
       token: get().token,
       allowLlmWhenSensitiveUnknown: get().allowLlmWhenSensitiveUnknown,
+      blogId: get().blogId,
+      defaultTags: get().defaultTags,
       ...patch,
     };
     await browser.storage.local.set({ [STORAGE_KEY]: next });

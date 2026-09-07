@@ -9,7 +9,14 @@
     "dev:ext": "pnpm --filter extension dev",
     "build:ext": "pnpm --filter extension build",
     "test:ext": "pnpm --filter extension test",
+    "test:performance": "bash scripts/test_performance_without_chrome.sh",
     "typecheck": "pnpm --filter extension typecheck",
-    "verify": "./scripts/verify_all.sh"
+    "verify": "./scripts/verify_all.sh",
+    "build:web": "pnpm --filter web build",
+    "test:web": "pnpm --filter web test",
+    "typecheck:web": "pnpm --filter web typecheck",
+    "app:start": "bash scripts/start_web_app.sh",
+    "app:pair": "bash scripts/start_web_app.sh --pair-only",
+    "test:parity": "uv run python scripts/check_web_parity.py"
   }
 }

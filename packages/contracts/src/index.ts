@@ -150,6 +150,59 @@ export interface DraftCreateResponse {
   prompt_version: string;
 }
 
+export type BlogComposeStyle = 'auto' | 'informational' | 'review' | 'product';
+
+export interface LLMStatusResponse {
+  ready: boolean;
+  provider: string;
+  model: string;
+  message: string;
+  action: string;
+  engine?: string;
+  auth?: 'chatgpt' | 'api_key' | 'authenticated' | 'configured' | 'not_required' | 'missing' | 'unknown' | string;
+  quality_tier?: 'high' | 'local' | 'external' | 'none' | 'unknown' | string;
+}
+
+export interface BlogComposeRequest {
+  keyword: string;
+  style: BlogComposeStyle;
+  user_notes: string;
+  target_chars: number;
+  allow_sensitive_unknown: boolean;
+  force_refresh?: boolean;
+  source_draft_id?: number | null;
+  source_draft_mode?: 'revision' | 'followup';
+}
+
+export interface ArticleQuality {
+  passed: boolean;
+  score: number;
+  char_count: number;
+  target_chars: number;
+  paragraph_count: number;
+  keyword_count: number;
+  issues: string[];
+  checks: Record<string, boolean>;
+  repair_attempted: boolean;
+}
+
+export interface BlogComposeResponse {
+  keyword: string;
+  snapshot_id: number;
+  draft: DraftCreateResponse;
+  quality: ArticleQuality;
+  suggested_tags: string[];
+  analysis_summary: {
+    monthly_searches: number | null;
+    related_keyword_count: number;
+    question_count: number;
+    data_status: Record<string, string>;
+  };
+  fact_pack_id: number | null;
+  fact_pack_version: number | null;
+  preflight: PreflightResponse;
+}
+
 export interface DraftVersion {
   version: number;
   title: string;
@@ -311,7 +364,7 @@ export interface IntentBoardResponse {
   items: IntentBoardItem[];
 }
 
-export type TodayWorkAction = 'inspect_error' | 'resume_draft' | 'register_publication' | 'refresh_data' | 'open_analysis';
+export type TodayWorkAction = 'inspect_error' | 'resume_draft' | 'register_publication' | 'refresh_data' | 'open_analysis' | 'open_performance';
 
 export interface TodayWorkItem {
   id: string;
@@ -656,4 +709,222 @@ export interface AdPerformanceResponse {
     conversions: number | null;
   }>;
   collected_at?: string;
+}
+
+export type PerformanceSource = 'creator_advisor' | 'biz_advisor' | 'search_advisor';
+export type PerformanceDataKind = 'content_performance' | 'query_performance' | 'commerce_attribution' | 'site_performance';
+export type PerformanceDataState = 'pending' | 'partial' | 'observed_zero' | 'unavailable' | 'ready';
+export type PerformanceGrain = 'daily' | 'weekly' | 'monthly';
+
+export interface PerformanceChannel {
+  id: number;
+  source: PerformanceSource;
+  channel_kind: 'blog' | 'smartstore' | 'website';
+  display_name: string;
+  site_url: string | null;
+  ownership_confirmed: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PerformanceChannelListResponse {
+  items: PerformanceChannel[];
+  features: { creator: boolean; commerce: boolean; website: boolean };
+}
+
+export interface ContentPerformanceImportRow {
+  canonical_url?: string | null;
+  published_content_id?: number | null;
+  title?: string;
+  views?: number | null;
+  impressions?: number | null;
+  inflows?: number | null;
+  ctr?: number | null;
+  average_rank?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  data_state?: PerformanceDataState;
+}
+
+export interface QueryPerformanceImportRow {
+  query: string;
+  canonical_url?: string | null;
+  published_content_id?: number | null;
+  impressions?: number | null;
+  inflows?: number | null;
+  ctr?: number | null;
+  average_rank?: number | null;
+  data_state?: PerformanceDataState;
+}
+
+export interface CommerceAttributionImportRow {
+  tracking_id: string;
+  destination_url?: string | null;
+  published_content_id?: number | null;
+  inflows?: number | null;
+  product_views?: number | null;
+  orders?: number | null;
+  conversion_rate?: number | null;
+  attributed_revenue?: number | null;
+  data_state?: PerformanceDataState;
+}
+
+export interface SitePerformanceImportRow {
+  page_url: string;
+  collected_pages?: number | null;
+  indexed_pages?: number | null;
+  impressions?: number | null;
+  clicks?: number | null;
+  ctr?: number | null;
+  data_state?: PerformanceDataState;
+}
+
+export type PerformanceImportRow =
+  | ContentPerformanceImportRow
+  | QueryPerformanceImportRow
+  | CommerceAttributionImportRow
+  | SitePerformanceImportRow;
+
+export interface PerformanceImportRequest {
+  channel_id: number;
+  source: PerformanceSource;
+  data_kind: PerformanceDataKind;
+  period_start: string;
+  period_end: string;
+  grain: PerformanceGrain;
+  rows: PerformanceImportRow[];
+}
+
+export interface PerformanceImportPreview {
+  valid: true;
+  channel: PerformanceChannel;
+  source: PerformanceSource;
+  data_kind: PerformanceDataKind;
+  period: { start: string; end: string };
+  grain: PerformanceGrain;
+  row_count: number;
+  warnings: string[];
+  input_hash: string;
+  rows: Array<Record<string, unknown>>;
+}
+
+export interface PerformanceImportRun {
+  id: number;
+  channel_id: number;
+  source: PerformanceSource;
+  data_kind: PerformanceDataKind;
+  period: { start: string; end: string };
+  grain: PerformanceGrain;
+  status: 'ready' | 'partial';
+  row_count: number;
+  warning_count: number;
+  warnings: string[];
+  input_hash: string;
+  collected_at: string;
+  duplicate: boolean;
+}
+
+export interface PerformanceMetricSummary {
+  channel_name?: string;
+  aggregation_note?: string;
+  source: PerformanceSource;
+  channel_id: number;
+  data_kind: PerformanceDataKind;
+  period: { start: string; end: string };
+  grain: PerformanceGrain;
+  status: string;
+  collected_at: string;
+  metrics: Record<string, number | null>;
+  previous_metrics: Record<string, number | null> | null;
+  changes: Record<string, number | null>;
+  row_count: number;
+}
+
+export interface PerformanceOverviewResponse {
+  creator: PerformanceMetricSummary | null;
+  commerce: PerformanceMetricSummary | null;
+  website: PerformanceMetricSummary | null;
+  sources_combined: false;
+  note: string;
+}
+
+export interface ContentPerformanceItem {
+  id: number;
+  channel_id: number;
+  published_content_id: number | null;
+  canonical_url: string | null;
+  title: string;
+  keyword: string;
+  period: { start: string; end: string };
+  grain: PerformanceGrain;
+  data_state: PerformanceDataState;
+  metrics: {
+    views: number | null;
+    impressions: number | null;
+    inflows: number | null;
+    ctr: number | null;
+    average_rank: number | null;
+    likes: number | null;
+    comments: number | null;
+  };
+  previous_metrics: ContentPerformanceItem['metrics'] | null;
+  market: {
+    keyword: string;
+    searchad: { monthly_searches: number | null; source: 'SEARCH_AD'; collected_at: string | null } | null;
+    trend: { latest_ratio: number | null; source: 'NAVER_API_HUB'; collected_at: string | null; note: string } | null;
+    serp: {
+      sample_count: number;
+      blog_count: number;
+      ad_count: number;
+      median_observed_rank: number | null;
+      source: 'BROWSER_DOM';
+      collected_at: string;
+      note: string;
+    } | null;
+  };
+  mapped: boolean;
+}
+
+export interface QueryPerformanceItem {
+  id: number;
+  channel_id: number;
+  published_content_id: number | null;
+  query: string;
+  canonical_url: string | null;
+  period: { start: string; end: string };
+  grain: PerformanceGrain;
+  data_state: PerformanceDataState;
+  metrics: { impressions: number | null; inflows: number | null; ctr: number | null; average_rank: number | null };
+}
+
+export type PerformanceAction = 'improve_title' | 'refresh_body' | 'create_followup';
+
+export interface PerformanceRecommendation {
+  published_keyword?: string | null;
+  id: number;
+  channel_id: number;
+  published_content_id: number | null;
+  draft_id: number | null;
+  published_title: string | null;
+  published_url: string | null;
+  keyword: string;
+  rule_code: string;
+  action: PerformanceAction;
+  reason: string;
+  confidence: 'low' | 'medium' | 'high';
+  calculation_version: string;
+  period: { start: string; end: string };
+  evidence: Record<string, unknown>;
+  status: 'open' | 'dismissed' | 'done';
+  created_at: string;
+}
+
+export interface TrackingLinkResponse {
+  id: number;
+  url: string;
+  tracking_id: string;
+  published_content_id: number | null;
+  parameters: Record<string, string | null>;
+  attribution_note: string;
 }

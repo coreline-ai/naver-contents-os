@@ -21,6 +21,9 @@ V1 분석 기능에 필요한 외부 계정은 두 종류입니다.
 | PC/모바일 월간 검색량 | SearchAd `/keywordstool` | 필수 | API HUB가 제공하지 않음 |
 | 연관 키워드·광고 경쟁 지표 | SearchAd `/keywordstool` | 필수 | 검색광고 지표로 명확히 표시 |
 | 현재 SERP·블로그 공개 정보 | Browser DOM | 필수 | API Key 없음, DOM 변경 리스크 |
+| 내 블로그 게시물·검색어 성과 | Creator Advisor 집계표 | 선택 | 공식 읽기 API를 가정하지 않고 CSV/TSV 수동 가져오기 |
+| SmartStore 기여 성과 | Biz Advisor 집계표 | 선택 | 고객·주문 단위 제외, 추적 집계만 가져오기 |
+| 독립 웹사이트 검색 성과 | Search Advisor 집계표 | 선택 | 네이버 블로그·스마트스토어와 분리 |
 | 글 생성 | Local/외부 LLM | 선택 | V2 연결됨 — 아래 "LLM 경로" 참조 |
 
 ## API HUB 이관 일정
@@ -186,25 +189,24 @@ X-Signature
 
 SearchAd 키워드 도구는 다른 API보다 429 제한이 민감할 수 있습니다. 캐시, 지수 백오프, jitter, 동시 호출 제한이 필수입니다. 근거: [키워드 도구 429 가이드](https://naver.github.io/searchad-apidoc/notice/2020/12/18/notice/)
 
-## LLM 경로 (V2, 2026-09-01 실호출 검증)
+## LLM 경로 (V3, 2026-09-04)
 
-초안 생성 LLM은 `.env`의 `LLM_PROVIDER`로 선택합니다. API 키는 어느 경로에도 필요 없습니다.
+완성 글 생성 LLM은 `.env`의 `LLM_PROVIDER`로 선택합니다.
 
 | 경로 | 설정 | 필요 조건 | 특징 |
 |---|---|---|---|
-| Ollama (기본) | `LLM_PROVIDER=local` | `ollama pull <model>` | 데이터가 기기 밖으로 나가지 않음 |
-| Codex OAuth 프록시 | `LLM_PROVIDER=openai_compat` | `codex login` 완료(`~/.codex/auth.json`) + 프록시 기동 | ChatGPT 구독 모델(gpt-5.4 계열) 사용, API 키 불필요 |
-| 기타 OpenAI 호환 | `LLM_PROVIDER=openai_compat` + `OPENAI_COMPAT_BASE_URL` 변경 | LM Studio·ChatMock 등 | 동일 Provider로 커버 |
+| 공식 Codex CLI (기본) | `LLM_PROVIDER=codex_cli` | 공식 CLI 설치 후 `codex login` | 저장된 ChatGPT 로그인을 CLI 내부에서 재사용, API key 입력 불필요 |
+| Ollama | `LLM_PROVIDER=local` | `ollama pull <model>` | 데이터가 기기 밖으로 나가지 않음, 모델 품질 별도 검증 필요 |
+| 기타 OpenAI 호환 | `LLM_PROVIDER=openai_compat` | 신뢰하는 endpoint·model·필요 시 API key | 수동 설정한 별도 서비스에 자료 전송 |
 
-Codex 프록시 기동: 수동 `npx -y @thkdog/codex-openai-proxy`(127.0.0.1:8787) 또는 `.env`에
-`CODEX_PROXY_AUTOSTART=true`(Local Core가 기동·헬스 대기·종료 관리). 401 발생 시 `codex login`으로
-재로그인하면 auth.json이 갱신됩니다.
+Codex 기본 준비:
 
-참조 오픈소스: [thkdog/codex-openai-proxy](https://github.com/thkdog/codex-openai-proxy)(기본),
-[RayBytes/ChatMock](https://github.com/RayBytes/ChatMock)(대안, MIT).
-주의: 구독 OAuth 프록시는 OpenAI 비공식 경로입니다 — 본인 계정, 자기 책임으로 사용하며
-백엔드 변경 시 동작이 깨질 수 있습니다. 외부 전송·보안 규칙은
-[11_local_environment_and_security.md](./11_local_environment_and_security.md) 보안 규칙 9·10을 따릅니다.
+```bash
+codex login
+codex login status
+```
+
+Local Core는 `codex exec`를 `--ephemeral`, `--sandbox read-only`, 빈 작업 디렉터리, 제한된 환경변수로 실행합니다. 프롬프트는 stdin으로만 전달하며 OAuth credential 파일을 직접 열지 않습니다. 로그인 만료 시 터미널에서 `codex login`을 다시 실행하세요. 외부 전송·보안 규칙은 [11_local_environment_and_security.md](./11_local_environment_and_security.md)를 따릅니다.
 
 ## 계정 준비 완료 판정
 

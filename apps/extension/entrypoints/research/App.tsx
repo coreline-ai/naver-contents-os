@@ -8,6 +8,8 @@ import type {
   IntentBoardResponse,
   SearchIntent,
   PublishedContent,
+  PerformanceAction,
+  PerformanceRecommendation,
   ResearchGraphNode,
   ResearchGraphResponse,
   RisingMode,
@@ -19,19 +21,14 @@ import type {
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
+import { OpportunityGraph } from '@ncos/workbench';
+export { OpportunityGraph } from '@ncos/workbench';
 import { PcMobileDonut } from '~/components/PcMobileDonut';
+import OwnedPerformanceWorkspace, { buildImprovementDraftParams } from './PerformanceWorkspace';
 import { CoreClient, CoreError } from '~/lib/core';
 import { useSettings } from '~/lib/settings';
 
-type WorkspaceView = 'work' | 'drafts' | 'published' | 'facts' | 'intent' | 'graph' | 'rising' | 'watchlist' | 'specialized' | 'performance';
-
-const COLORS = ['#059669', '#2563eb', '#7c3aed', '#db2777', '#d97706', '#0891b2', '#475569'];
-
-function colorFor(value: string): string {
-  let hash = 0;
-  for (const char of value) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return COLORS[hash % COLORS.length];
-}
+type WorkspaceView = 'work' | 'my-performance' | 'drafts' | 'published' | 'facts' | 'intent' | 'graph' | 'rising' | 'watchlist' | 'specialized' | 'performance';
 
 function money(value: number | null): string {
   return value == null ? '결측' : `${Math.round(value).toLocaleString()}원`;
@@ -56,7 +53,10 @@ export default function App() {
   const [keyword, setKeyword] = useState(params.get('keyword') ?? '');
   const [snapshotId, setSnapshotId] = useState<number | null>(Number(params.get('snapshot_id')) || null);
   const initialFactPackId = Number(params.get('fact_pack_id')) || null;
-  const [view, setView] = useState<WorkspaceView>(initialFactPackId ? 'facts' : 'work');
+  const requestedView = params.get('view');
+  const [view, setView] = useState<WorkspaceView>(
+    initialFactPackId ? 'facts' : requestedView === 'my-performance' ? 'my-performance' : 'work',
+  );
   const [factPack, setFactPack] = useState<FactPack | null>(null);
   const [graph, setGraph] = useState<ResearchGraphResponse | null>(null);
   const [selectedId, setSelectedId] = useState('');
@@ -297,6 +297,17 @@ export default function App() {
     void browser.tabs.create({ url: browser.runtime.getURL(`/sidepanel.html?${params.toString()}`) });
   }
 
+  function openPerformanceImprovement(item: PerformanceRecommendation, action: PerformanceAction) {
+    const labels: Record<PerformanceAction, string> = {
+      improve_title: '제목 개선',
+      refresh_body: '본문 최신화',
+      create_followup: '후속 글 작성',
+    };
+    if (!window.confirm(`${labels[action]} 작업을 준비할까요? 성과 근거를 확인한 뒤 완성 글 화면에서 다시 실행해야 합니다.`)) return;
+    const params = buildImprovementDraftParams(item, action);
+    void browser.tabs.create({ url: browser.runtime.getURL(`/sidepanel.html?${params.toString()}`) });
+  }
+
   async function registerTodayPublication(item: TodayWorkItem) {
     if (!item.draft_id) return;
     const canonicalUrl = window.prompt('실제로 공개된 네이버 글 URL을 입력하세요.');
@@ -324,6 +335,10 @@ export default function App() {
     }
     if (item.action === 'register_publication') {
       await registerTodayPublication(item);
+      return;
+    }
+    if (item.action === 'open_performance') {
+      setView('my-performance');
       return;
     }
     if (item.action === 'refresh_data') {
@@ -376,6 +391,7 @@ export default function App() {
           <nav className="space-y-1">
             {([
               ['work', '오늘의 작업'],
+              ['my-performance', '내 성과'],
               ['drafts', '콘텐츠 작업함'],
               ['published', '발행 콘텐츠'],
               ['facts', '근거 브리프'],
@@ -434,6 +450,12 @@ export default function App() {
               />
             </div>
           </section>
+        )}
+        {view === 'my-performance' && (
+          <OwnedPerformanceWorkspace
+            client={client}
+            onOpenImprovement={openPerformanceImprovement}
+          />
         )}
         {view === 'drafts' && (
           <DraftWorkbox
@@ -571,6 +593,7 @@ const TODAY_ACTION_LABEL: Record<TodayWorkItem['action'], string> = {
   register_publication: '발행 등록',
   refresh_data: '데이터 갱신',
   open_analysis: '분석 열기',
+  open_performance: '성과 개선 보기',
 };
 
 export function TodayWorkCards({
@@ -893,47 +916,6 @@ export function DraftWorkbox({
         </div>
       )}
     </section>
-  );
-}
-
-function graphPositions(nodes: ResearchGraphNode[]): Record<string, { x: number; y: number }> {
-  const groups = new Map<number, ResearchGraphNode[]>();
-  for (const node of nodes) groups.set(node.depth, [...(groups.get(node.depth) ?? []), node]);
-  const positions: Record<string, { x: number; y: number }> = {};
-  for (const [depth, rows] of groups) {
-    rows.forEach((node, index) => {
-      if (depth === 0) positions[node.id] = { x: 400, y: 260 };
-      else {
-        const radius = depth === 1 ? 165 : 290;
-        const angle = (Math.PI * 2 * index) / Math.max(1, rows.length) - Math.PI / 2;
-        positions[node.id] = { x: 400 + Math.cos(angle) * radius, y: 260 + Math.sin(angle) * radius };
-      }
-    });
-  }
-  return positions;
-}
-
-export function OpportunityGraph({ graph, selectedId, minimumVolume, onSelect }: { graph: ResearchGraphResponse; selectedId: string; minimumVolume: number; onSelect: (id: string) => void }) {
-  const nodes = graph.nodes.filter((node) => node.depth === 0 || (node.volume ?? 0) >= minimumVolume);
-  const visible = new Set(nodes.map((node) => node.id));
-  const positions = graphPositions(nodes);
-  return (
-    <svg viewBox="0 0 800 520" className="h-[60vh] min-h-[420px] w-full rounded-xl bg-slate-950" role="img" aria-label="키워드 기회 그래프">
-      {graph.edges.filter((edge) => visible.has(edge.source) && visible.has(edge.target)).map((edge) => {
-        const source = positions[edge.source]; const target = positions[edge.target];
-        return source && target ? <line key={`${edge.source}-${edge.target}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke="#334155" strokeWidth="1.5" /> : null;
-      })}
-      {nodes.map((node) => {
-        const point = positions[node.id];
-        const radius = node.depth === 0 ? 30 : Math.max(10, Math.min(26, 8 + Math.log10((node.volume ?? 0) + 10) * 4));
-        return (
-          <g key={node.id} role="button" tabIndex={0} aria-label={`${node.keyword}, 검색량 ${node.volume ?? '결측'}`} onClick={() => onSelect(node.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelect(node.id); }} className="cursor-pointer outline-none">
-            <circle cx={point.x} cy={point.y} r={radius} fill={colorFor(node.cluster)} stroke={selectedId === node.id ? '#f8fafc' : node.enrichment_status === 'ok' ? '#10b981' : '#f59e0b'} strokeWidth={selectedId === node.id ? 5 : 2} />
-            <text x={point.x} y={point.y + radius + 13} textAnchor="middle" fill="#e2e8f0" fontSize="11">{node.keyword.slice(0, 13)}</text>
-          </g>
-        );
-      })}
-    </svg>
   );
 }
 

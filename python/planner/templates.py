@@ -58,12 +58,16 @@ TEMPLATES: dict[BlogType, tuple[TemplateSection, ...]] = {
 }
 
 ACTIVE_TYPES = frozenset(BlogType)
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2-complete"
 
 SYSTEM_PROMPT = (
-    "당신은 네이버 블로그 글을 쓰는 한국어 작가입니다. 과장 없이 구체적으로 쓰고, "
-    "확인되지 않은 사실은 단정하지 않습니다. 마크다운 기호(#, *, 백틱) 없이 "
-    "순수 텍스트로 작성하고, 섹션 제목은 줄바꿈으로만 구분합니다."
+    "/no_think\n당신은 네이버 블로그에 바로 임시저장할 수 있는 한국어 완성 원고를 쓰는 편집자입니다. "
+    "과장 없이 구체적으로 쓰고, 확인되지 않은 사실·최신 정보·수치를 단정하지 않습니다. "
+    "제공된 근거에 없는 예약 조건, 신분증, 가격, 연락처, 정책을 만들지 않고 확인이 필요한 내용은 체크 항목으로 표현합니다. "
+    "사용자 메모나 승인된 근거에 없는 고유명사, 준비물, 장비, 장소, 활동, 효능을 구체적으로 지어내지 않고 일반 범주와 확인 방법으로 설명합니다. "
+    "사용자 메모에 없는 1인칭 경험을 지어내지 않습니다. 작성 지시, TODO, 빈 섹션, 응답 설명을 남기지 않습니다. "
+    "생각 과정, 계획, 글자 수 계산, 자기 대화는 어떤 언어로도 출력하지 말고 완성 원고만 출력합니다. "
+    "마크다운 기호(#, *, 백틱) 없이 순수 텍스트로 작성하고, 소제목과 문단은 줄바꿈으로 구분합니다."
 )
 
 
@@ -78,14 +82,16 @@ def build_prompt(
     angle: str = "",
     questions: list[str] | None = None,
     min_chars: int = 2500,
+    user_notes: str = "",
 ) -> str:
     if not is_active(blog_type):
         raise ValueError(f"지원하지 않는 블로그 유형입니다: {blog_type}")
     sections = TEMPLATES[blog_type]
     lines = [
-        f"다음 조건으로 네이버 블로그 글을 작성하세요.",
+        "/no_think",
+        "다음 조건으로 네이버 블로그에 바로 저장할 수 있는 완성 글을 작성하세요.",
         f"주제: {title}",
-        f"핵심 키워드: {target_keyword} (제목과 본문에 자연스럽게 포함)",
+        f"핵심 키워드: {target_keyword} (제목에 1회, 본문에는 최대 3회만 자연스럽게 포함)",
         f"글 유형: {blog_type.value}",
     ]
     if angle:
@@ -93,7 +99,25 @@ def build_prompt(
     if questions:
         lines.append("독자들이 실제로 묻는 질문 (본문에서 답할 것):")
         lines.extend(f"- {q}" for q in questions[:5])
-    lines.append(f"\n본문은 {min_chars}자 이상, 아래 섹션 순서를 따르세요:")
+    if user_notes.strip():
+        lines.append("사용자가 직접 제공한 메모(개인 경험은 이 범위에서만 사용):")
+        lines.append(user_notes.strip())
+    else:
+        lines.append("사용자 경험 메모가 없으므로 직접 방문·구매·사용한 것처럼 쓰지 마세요.")
+    preferred_min = round(min_chars * 0.9)
+    preferred_max = round(min_chars * 1.15)
+    paragraph_target = max(170, round(min_chars / 12))
+    paragraph_min = round(paragraph_target * 0.9)
+    paragraph_max = round(paragraph_target * 1.1)
+    lines.append(
+        f"\n본문은 {min_chars:,}자 전후, 반드시 {preferred_min:,}~{preferred_max:,}자 사이로 완성하세요. "
+        f"전체를 약 12개 문단으로 나누고 각 문단은 {paragraph_min}~{paragraph_max}자, 2~4문장으로 쓰세요. "
+        "같은 문장·표현·키워드를 반복해 분량을 늘리지 말고, 각 문단에는 서로 다른 정보를 담으세요. "
+        "작성 방법을 설명하지 말고 아래 구조의 실제 내용을 모두 채우세요:"
+    )
     lines.extend(f"{i + 1}. {s.name}: {s.guidance}" for i, s in enumerate(sections))
-    lines.append("\n출력 형식: 첫 줄에 '제목: <25~35자 제목>'을 쓰고, 빈 줄 뒤에 본문을 작성하세요.")
+    lines.append(
+        "\n출력 형식: 첫 줄에 '제목: <25~35자 제목>'을 쓰고, 빈 줄 뒤에 완성 본문만 작성하세요. "
+        "괄호 안의 작성 지시, 자리 표시, 메타 설명은 출력하지 마세요."
+    )
     return "\n".join(lines)

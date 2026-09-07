@@ -2,6 +2,9 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'wxt';
 
 export default defineConfig({
+  // Keep the unpacked extension in a visible folder so Chrome's file picker
+  // can select it without exposing hidden dot-directories.
+  outDir: 'dist',
   modules: ['@wxt-dev/module-react'],
   vite: () => ({ plugins: [tailwindcss()] }),
   manifest: {

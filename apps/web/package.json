@@ -1,0 +1,27 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ncos/contracts": "workspace:*",
+    "@ncos/core-client": "workspace:*",
+    "@tanstack/react-query": "^5.62.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "@ncos/workbench": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "8.2.2",
+    "typescript": "^5.8.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "vitest": "^3.1.0",
+    "happy-dom": "^16.0.0"
+  }
+}

@@ -1,8 +1,9 @@
 """OpenAI-compatible chat provider (V2).
 
-One client covers every OpenAI-compatible endpoint we care about: a local Codex
-OAuth proxy (thkdog/codex-openai-proxy, ChatMock), Ollama's OpenAI endpoint, or
-LM Studio. Non-streaming text generation only.
+One client covers an explicitly configured trusted OpenAI-compatible endpoint,
+such as Ollama's OpenAI endpoint or LM Studio. Official Codex authentication is
+handled by `CodexCliProvider`, not by exposing OAuth tokens through a proxy.
+Non-streaming text generation only.
 
 Error handling contract (dev-plan/implement_20260901_222443.md):
 - connection failure -> how to start the proxy
@@ -45,8 +46,7 @@ class OpenAICompatProvider:
     def _connection_error(self, exc: Exception) -> LLMError:
         return LLMError(
             f"OpenAI 호환 엔드포인트({self._base_url})에 연결할 수 없습니다 ({type(exc).__name__}). "
-            "프록시를 먼저 기동하세요: `npx -y @thkdog/codex-openai-proxy` "
-            "또는 .env에 CODEX_PROXY_AUTOSTART=true"
+            "설정한 로컬 또는 신뢰할 수 있는 엔드포인트를 먼저 실행하세요."
         )
 
     def _status_error(self, status: int) -> LLMError:
@@ -85,17 +85,23 @@ class OpenAICompatProvider:
         self._model = str(model_ids[0])
         return self._model
 
-    def generate(self, prompt: str, *, system: str = "") -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        max_tokens: int | None = None,
+    ) -> str:
         model = self.resolve_model()
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
         try:
-            response = self._http.post(
-                "/chat/completions",
-                json={"model": model, "messages": messages, "stream": False},
-            )
+            payload = {"model": model, "messages": messages, "stream": False}
+            if max_tokens is not None:
+                payload["max_tokens"] = max_tokens
+            response = self._http.post("/chat/completions", json=payload)
         except httpx.HTTPError as exc:
             raise self._connection_error(exc) from exc
         if response.status_code != 200:

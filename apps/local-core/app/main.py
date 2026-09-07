@@ -42,6 +42,22 @@ def create_app() -> FastAPI:
 
     app.include_router(v1_router)
 
+    from app.web_app import web_router
+    from app.web_session import router as session_router
+
+    app.include_router(session_router)
+
+    from app.web_version import runtime_revision
+    from app.web_session import check_web_request
+    revision = runtime_revision()
+
+    @app.get("/web/version")
+    def web_version(request: Request) -> dict:
+        check_web_request(request)
+        return {"protocol": 1, "revision": revision}
+
+    app.include_router(web_router(settings.web_build_dir))
+
     log.info("app_configured", **settings.status_summary())
     return app
 

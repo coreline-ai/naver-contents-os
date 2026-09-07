@@ -1,10 +1,49 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DraftCreateRequest } from '@ncos/contracts';
+import type { BlogComposeRequest, DraftCreateRequest, PerformanceImportRequest } from '@ncos/contracts';
 import { CoreClient } from '../lib/core';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('CoreClient draft contract', () => {
+  it('reads AI readiness and posts the one-action complete blog contract', async () => {
+    const status = {
+      ready: true,
+      provider: 'ollama',
+      model: 'qwen3:4b',
+      message: '준비되었습니다.',
+      action: '',
+    };
+    const composed = { keyword: '제주 여행', draft: { draft_id: 9 } };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => status })
+      .mockResolvedValueOnce({ ok: true, status: 201, json: async () => composed });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new CoreClient('http://127.0.0.1:3719', 'token');
+    const input: BlogComposeRequest = {
+      keyword: '제주 여행',
+      style: 'informational',
+      user_notes: '아이와 이동',
+      target_chars: 2500,
+      allow_sensitive_unknown: true,
+    };
+
+    await expect(client.llmStatus()).resolves.toEqual(status);
+    await expect(client.composeBlog(input)).resolves.toEqual(composed);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:3719/v1/llm/status',
+      expect.objectContaining({ headers: expect.objectContaining({ 'X-Local-Token': 'token' }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:3719/v1/blogs/compose',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ ...input, force_refresh: false }),
+      }),
+    );
+  });
+
   it('posts a draft request with the local token', async () => {
     const responseBody = {
       draft_id: 1,
@@ -125,5 +164,29 @@ describe('CoreClient draft contract', () => {
       'http://127.0.0.1:3719/v1/watchlist/3',
       expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+
+  it('sends only normalized aggregate rows to the performance preview API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ valid: true, rows: [], warnings: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new CoreClient('http://127.0.0.1:3719', 'token');
+    const input: PerformanceImportRequest = {
+      channel_id: 1,
+      source: 'creator_advisor',
+      data_kind: 'content_performance',
+      period_start: '2026-08-24',
+      period_end: '2026-08-30',
+      grain: 'weekly',
+      rows: [{ title: '정규화 글', impressions: 100, inflows: 3 }],
+    };
+    await client.previewPerformanceImport(input);
+    const body = String(fetchMock.mock.calls[0][1]?.body);
+    expect(JSON.parse(body)).toEqual(input);
+    expect(body).not.toContain('cookie');
+    expect(body).not.toContain('raw_file');
   });
 });

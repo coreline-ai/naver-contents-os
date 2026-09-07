@@ -59,16 +59,20 @@ NAVER_SEARCHAD_API_KEY=
 NAVER_SEARCHAD_SECRET_KEY=
 NAVER_SEARCHAD_CUSTOMER_ID=
 
-LLM_PROVIDER=local
+LLM_PROVIDER=codex_cli
+CODEX_CLI_EXECUTABLE=codex
+CODEX_CLI_MODEL=gpt-5.6-sol
+CODEX_CLI_REASONING=high
+CODEX_CLI_TIMEOUT_SECONDS=300
+
+# 선택 경로: Ollama (LLM_PROVIDER=local)
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=
 
-# V2: OpenAI 호환 엔드포인트 (Codex OAuth 프록시 등, LLM_PROVIDER=openai_compat 일 때)
+# 선택 경로: 사용자가 신뢰하는 OpenAI 호환 엔드포인트 (LLM_PROVIDER=openai_compat)
 OPENAI_COMPAT_BASE_URL=http://127.0.0.1:8787/v1
 OPENAI_COMPAT_API_KEY=
 OPENAI_COMPAT_MODEL=
-CODEX_PROXY_AUTOSTART=false
-CODEX_PROXY_CMD=npx -y @thkdog/codex-openai-proxy
 
 LOCAL_CORE_HOST=127.0.0.1
 LOCAL_CORE_PORT=3719
@@ -99,7 +103,10 @@ Local Core: 127.0.0.1:3719
   - 캐시/DB/점수 계산
           │
           ├─ NAVER API HUB
-          └─ NAVER SearchAd
+          ├─ NAVER SearchAd
+          └─ 공식 Codex CLI subprocess
+                - 로그인·token 갱신은 CLI 내부 책임
+                - ephemeral/read-only/빈 작업 디렉터리
 ```
 
 필수 보안 규칙:
@@ -112,10 +119,21 @@ Local Core: 127.0.0.1:3719
 6. API 응답 fixture를 저장하기 전 URL·블로그 ID 등 개인정보성 필드 검토.
 7. `.env`, DB, 스크린샷, 사용자 콘텐츠를 원격 분석 서비스로 자동 전송하지 않음.
 8. SmartEditor는 임시저장까지만 자동화하고 공개 발행은 사용자 확인 후 수행.
-9. 초안 프롬프트(키워드·질문·플랜 제목)의 외부 전송은 사용자가 `LLM_PROVIDER=openai_compat`를
-   명시적으로 설정한 경우에만 발생. 기본값 `local`(Ollama)은 기기 밖으로 아무것도 보내지 않음.
-10. `~/.codex/auth.json`은 존재 여부만 점검하고 내용을 읽거나 로그·DB에 남기지 않음.
-    Codex OAuth 프록시는 반드시 `127.0.0.1` bind로만 사용.
+9. 기본 `LLM_PROVIDER=codex_cli`에서는 주제·메모·승인 자료가 Codex 서비스로 전송됨. 외부 전송을 원하지 않으면 검증된 로컬 Ollama 모델과 `LLM_PROVIDER=local`을 명시적으로 선택.
+10. Local Core는 `~/.codex/auth.json`의 존재 여부나 내용도 직접 읽지 않음. 공식 `codex login status`와 `codex exec`만 사용하고, prompt·생성 본문·stderr 원문·credential을 로그나 DB 진단 정보에 남기지 않음.
+11. Codex subprocess는 shell 없이 실행하고 prompt는 stdin으로만 전달. `--ephemeral`, `--sandbox read-only`, `--ignore-user-config`, `--ignore-rules`, 빈 작업 디렉터리와 환경변수 allowlist를 고정.
+12. `openai_compat`는 사용자가 신뢰하는 endpoint를 직접 지정한 경우에만 사용하며 Local Core가 별도 proxy를 자동 설치·기동하지 않음.
+13. 성과 가져오기는 Extension에서 CSV/TSV를 파싱한 뒤 allowlist 집계필드만 JSON으로 전송하며, 원본 파일·계정 응답·cookie를 저장하지 않음.
+14. 고객명·연락처·주소·주문번호 열과 credential이 포함된 URL은 성과 API allowlist에서 거부함.
+15. Creator·SearchAd·SERP·Biz·Search Advisor는 source를 유지하고 별도 근거로 표시하며 통합 절대점수를 만들지 않음.
+
+## Chrome 없이 성과 기능 검증
+
+```bash
+pnpm test:performance
+```
+
+이 명령은 합성 fixture로 API·DB·migration 규칙, CSV/TSV parser, happy-dom React UI, TypeScript 계약을 검증하며 Chrome·NAVER 로그인·외부 API·LLM을 사용하지 않습니다. 자세한 범위는 [16_performance_import_and_browserless_testing.md](./16_performance_import_and_browserless_testing.md)를 참조하세요.
 
 ## 브라우저 준비
 

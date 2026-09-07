@@ -10,4 +10,10 @@ class LLMError(Exception):
 class LLMProvider(Protocol):
     name: str
 
-    def generate(self, prompt: str, *, system: str = "") -> str: ...
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: str = "",
+        max_tokens: int | None = None,
+    ) -> str: ...

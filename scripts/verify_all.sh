@@ -10,6 +10,9 @@ uv run pytest -q
 pnpm typecheck
 pnpm test:ext
 pnpm build:ext
+pnpm test:web
+pnpm build:web
+uv run python scripts/check_web_parity.py
 uv run python -m compileall -q apps/local-core python scripts tests alembic
 
 VERIFY_DB="$(mktemp "${TMPDIR:-/tmp}/ncos-verify.XXXXXX")"

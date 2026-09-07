@@ -664,6 +664,25 @@ class ResearchService:
             session.commit()
             return stored
 
+    def recent_rising(self, *, limit: int = 8) -> dict:
+        """Latest run for each saved condition; local history, not a live ranking."""
+        if not 1 <= limit <= 12:
+            raise ValueError("recent rising limit must be between 1 and 12")
+        ranked = select(
+            DiscoveryRun.id,
+            func.row_number().over(
+                partition_by=(DiscoveryRun.seed, DiscoveryRun.mode, DiscoveryRun.region, DiscoveryRun.category),
+                order_by=(DiscoveryRun.created_at.desc(), DiscoveryRun.id.desc()),
+            ).label("position"),
+        ).subquery()
+        with self._sessions() as session:
+            rows = session.scalars(
+                select(DiscoveryRun).join(ranked, ranked.c.id == DiscoveryRun.id)
+                .where(ranked.c.position == 1)
+                .order_by(DiscoveryRun.created_at.desc(), DiscoveryRun.id.desc()).limit(limit)
+            ).all()
+            return {"runs": [row.payload for row in rows], "read_only": True}
+
     def latest_rising(
         self,
         *,

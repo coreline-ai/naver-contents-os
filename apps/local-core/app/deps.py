@@ -6,12 +6,14 @@ from app import errors
 from app.config import get_settings
 from app.db import make_engine, make_session_factory
 from app.services.analyze import AnalyzeService
+from app.services.composer import BlogComposerService
 from app.services.drafts import DraftService
 from app.services.factpacks import FactPackService
 from app.services.intent import IntentBoardService
 from app.services.work import TodayWorkService
 from app.services.publishing import PublishService
 from app.services.published import PublishedContentService
+from app.services.performance import PerformanceService
 from app.services.research import ResearchService
 from app.stores import SqlCacheStore, SqlUsageStore
 from providers.gateway import Gateway, ProviderPolicy
@@ -156,8 +158,8 @@ def get_draft_service(use_llm: bool = False) -> DraftService:
     settings = get_settings()
     llm = None
     if use_llm:
-        # local -> Ollama, openai_compat -> Codex OAuth proxy 등 OpenAI 호환 엔드포인트.
-        # 미지원 값·프록시 자동 기동 실패는 표준 llm_unavailable 오류로 변환된다.
+        # codex_cli keeps OAuth inside the official CLI. Unsupported values and
+        # provider startup failures become the standard llm_unavailable error.
         try:
             llm = build_llm_provider(settings)
         except LLMError as exc:
@@ -192,6 +194,21 @@ def get_today_work_service() -> TodayWorkService:
     return TodayWorkService(get_session_factory())
 
 
+@lru_cache
+def get_blog_composer_service() -> BlogComposerService:
+    return BlogComposerService(
+        get_analyze_service(),
+        get_research_service(),
+        get_fact_pack_service(),
+        get_draft_service,
+    )
+
+
+@lru_cache
+def get_performance_service() -> PerformanceService:
+    return PerformanceService(get_session_factory())
+
+
 def reset_caches() -> None:
     """Test helper: drop every cached singleton (settings included)."""
     get_settings.cache_clear()
@@ -205,3 +222,5 @@ def reset_caches() -> None:
     get_fact_pack_service.cache_clear()
     get_intent_board_service.cache_clear()
     get_today_work_service.cache_clear()
+    get_blog_composer_service.cache_clear()
+    get_performance_service.cache_clear()

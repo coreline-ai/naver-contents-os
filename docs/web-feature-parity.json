@@ -1,0 +1,426 @@
+{
+  "baseline": "main b8d461e + working tree, 2026-09-06; Python 267 + extension 74",
+  "validation_scope": "Structural coverage: paths/methods/explicit implementation status only. Automated and browser acceptance evidence lives in docs/20_full_function_review_20260906.md; no live PASS inferred.",
+  "features": [
+    {
+      "id": "F01",
+      "preserve": "주제·메모·자동/정보/후기/구매가이드·2,500/4,000자 완성 글",
+      "target": "글쓰기 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "composeBlog"
+      ],
+      "baseline_test": "apps/extension/tests/simple-compose.test.tsx",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/Writer.tsx",
+      "web_test": "apps/web/tests/writer.test.tsx"
+    },
+    {
+      "id": "F02",
+      "preserve": "Codex CLI·Ollama·명시적 OpenAI 호환 경로와 준비/오류 안내",
+      "target": "설정·글쓰기 / 웹, 서버 provider 유지",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "llmStatus"
+      ],
+      "baseline_test": "tests/unit/test_llm_factory_launcher.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/Writer.tsx",
+      "web_test": "apps/web/tests/writer.test.tsx"
+    },
+    {
+      "id": "F03",
+      "preserve": "품질 Gate·전체 재작성·분량 보강·실패 원고 저장 금지",
+      "target": "글쓰기 > 자동 검사 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "composeBlog",
+        "createDraft"
+      ],
+      "baseline_test": "tests/unit/test_composer.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/DraftEditor.tsx",
+      "web_test": "apps/web/tests/writer.test.tsx"
+    },
+    {
+      "id": "F04",
+      "preserve": "오타 교정·민감 키워드 판단·판별 불가 허용 설정",
+      "target": "키워드/글쓰기·설정 / 웹, 기존 차단 계약 유지",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "preflight"
+      ],
+      "baseline_test": "tests/integration/test_drafts_service.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/ContentPlanner.tsx",
+      "web_test": "apps/web/tests/planner.test.tsx"
+    },
+    {
+      "id": "F05",
+      "preserve": "입력 추천·최근 키워드·SearchAd 연관어·Top 8·선택 재분석",
+      "target": "키워드 찾기·글쓰기 추천 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "suggestKeywords",
+        "analyze"
+      ],
+      "baseline_test": "apps/extension/tests/app-state.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/KeywordWorkspace.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F06",
+      "preserve": "일반·지역·쇼핑·뉴스 상승 후보, 7일 비교·최신성·수동 최신 수집",
+      "target": "키워드 찾기 > 최근 상승 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "rising",
+        "latestRising",
+        "recentRising"
+      ],
+      "baseline_test": "apps/extension/tests/research.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/RisingDiscovery.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F07",
+      "preserve": "Opportunity Score·coverage/confidence·검색 결과 규모·출처별 지표",
+      "target": "키워드 찾기 > 분석 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "analyze"
+      ],
+      "baseline_test": "apps/extension/tests/components.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/KeywordAnalysis.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F08",
+      "preserve": "최대 80개 2단계 키워드 맵·노드 선택·검색량 필터",
+      "target": "키워드 찾기 > 키워드 맵 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "graph"
+      ],
+      "baseline_test": "apps/extension/tests/research.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/KeywordDetails.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F09",
+      "preserve": "의도별 보드·질문·클러스터·기존 콘텐츠 상태",
+      "target": "키워드 찾기 > 검색 의도 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "getIntentBoard"
+      ],
+      "baseline_test": "tests/integration/test_factpacks.py",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/KeywordDetails.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F10",
+      "preserve": "PC/모바일 검색량·도넛·상대 Trend·기기/성별/연령 타깃",
+      "target": "키워드 찾기 > 검색 추세·독자 특성 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "audience",
+        "analyze"
+      ],
+      "baseline_test": "apps/extension/tests/pc-mobile-donut.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/KeywordDetails.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F11",
+      "preserve": "광고 평균순위 입찰·최소노출·중간입찰·estimate와 별도 상업성 점수",
+      "target": "키워드 찾기 > 광고 입찰 참고 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "commercial"
+      ],
+      "baseline_test": "apps/extension/tests/research.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/KeywordDetails.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F12",
+      "preserve": "Watchlist 추가·삭제·수동 갱신·동일 조건 Snapshot 비교",
+      "target": "키워드 찾기 > 관심 키워드 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "listWatchlist",
+        "addWatchlist",
+        "deleteWatchlist",
+        "refreshWatchlist"
+      ],
+      "baseline_test": "apps/extension/tests/research.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/WatchKeywords.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F13",
+      "preserve": "지역 검색·Shopping Insight·상품/이미지 특화 조회",
+      "target": "키워드 찾기 > 분야별 자료 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "specialized"
+      ],
+      "baseline_test": "apps/extension/tests/app-state.test.tsx",
+      "web_acceptance": "implemented; automated P2-A checks; isolated browser checks; full live/user acceptance pending",
+      "web_ui": "packages/workbench/src/SpecializedResearch.tsx",
+      "web_test": "apps/web/tests/keywords.test.tsx"
+    },
+    {
+      "id": "F14",
+      "preserve": "참고 사진 검색·원본 링크·권리 안내, 자동 삽입하지 않음",
+      "target": "글쓰기 > 참고 사진 및 키워드 자료 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "specialized"
+      ],
+      "baseline_test": "apps/extension/tests/simple-compose.test.tsx",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/DraftEditor.tsx",
+      "web_test": "apps/web/tests/writer.test.tsx"
+    },
+    {
+      "id": "F15",
+      "preserve": "FactPack 생성·근거 선택·버전·승인·Snapshot/Draft 연결",
+      "target": "글쓰기 > 근거 자료 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "createFactPack",
+        "getFactPack",
+        "appendFactPackVersion"
+      ],
+      "baseline_test": "tests/integration/test_factpacks.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/FactPackEditor.tsx",
+      "web_test": "apps/web/tests/planner.test.tsx"
+    },
+    {
+      "id": "F16",
+      "preserve": "최대 15편 플랜·순서·시리즈 연결·8개 BlogType·선택 생성",
+      "target": "글쓰기 > 콘텐츠 플랜 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "analyze",
+        "createDraft"
+      ],
+      "baseline_test": "tests/unit/test_templates_llm.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/ContentPlanner.tsx",
+      "web_test": "apps/web/tests/planner.test.tsx"
+    },
+    {
+      "id": "F17",
+      "preserve": "구조 skeleton 및 상세 AI 초안 경로",
+      "target": "글쓰기 > 콘텐츠 플랜 > 작성 방식 / 웹; 구조 양식과 완성 글 구분",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "createDraft"
+      ],
+      "baseline_test": "tests/integration/test_drafts_service.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/ContentPlanner.tsx",
+      "web_test": "apps/web/tests/planner.test.tsx"
+    },
+    {
+      "id": "F18",
+      "preserve": "제목/본문 편집·새 버전 저장·원본 보존·최근 원고 이어쓰기",
+      "target": "글쓰기·내 원고 / 웹",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "getDraft",
+        "addDraftVersion"
+      ],
+      "baseline_test": "apps/extension/tests/draft-card.test.tsx",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/DraftEditor.tsx",
+      "web_test": "apps/web/tests/writer.test.tsx"
+    },
+    {
+      "id": "F19",
+      "preserve": "작업함 검색·상태 필터·cursor pagination·검수/보관/복원",
+      "target": "내 원고 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "listDrafts",
+        "updateDraftStatus"
+      ],
+      "baseline_test": "apps/extension/tests/research.test.tsx",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/DraftLibrary.tsx",
+      "web_test": "apps/web/tests/workflow.test.tsx"
+    },
+    {
+      "id": "F20",
+      "preserve": "오늘 작업의 우선순위·실패 복구·미발행·노후·성과/광고 공백",
+      "target": "글쓰기 > 오늘 할 일 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "todayWork"
+      ],
+      "baseline_test": "tests/integration/test_today_work.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/TodayWork.tsx",
+      "web_test": "apps/web/tests/workflow.test.tsx"
+    },
+    {
+      "id": "F21",
+      "preserve": "공개 URL/제목/공개 사실 확인 등록, 공개/노후/보관 관리",
+      "target": "내 원고 > 발행 기록 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "createPublishedContent",
+        "listPublishedContents",
+        "updatePublishedContent"
+      ],
+      "baseline_test": "tests/integration/test_drafts_service.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/DraftLibrary.tsx",
+      "web_test": "apps/web/tests/workflow.test.tsx"
+    },
+    {
+      "id": "F22",
+      "preserve": "Creator/Biz/Search 채널 등록·활성/비활성·사이트 소유 확인",
+      "target": "성과 > 연결·설정 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "createPerformanceChannel",
+        "listPerformanceChannels",
+        "updatePerformanceChannel"
+      ],
+      "baseline_test": "tests/integration/test_performance_api.py",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx"
+    },
+    {
+      "id": "F23",
+      "preserve": "4종 CSV/TSV·붙여넣기·열 매핑·상태·미리보기·멱등 저장·삭제",
+      "target": "성과 > 자료 가져오기 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "previewPerformanceImport",
+        "createPerformanceImport",
+        "listPerformanceImports",
+        "deletePerformanceImport"
+      ],
+      "baseline_test": "apps/extension/tests/performance-import-panel.test.tsx",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx"
+    },
+    {
+      "id": "F24",
+      "preserve": "게시물/검색어 기간 선택·동일 scope 집계·null/0·URL/ID 매핑",
+      "target": "성과 > 내 블로그 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "contentPerformance",
+        "queryPerformance",
+        "performanceOverview",
+        "mapContentPerformance"
+      ],
+      "baseline_test": "tests/unit/test_performance_review.py",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx"
+    },
+    {
+      "id": "F25",
+      "preserve": "근거 있는 제목 개선/최신화/후속 글·숨김/완료·v2 재계산",
+      "target": "성과 > 개선 작업 → 글쓰기 / 웹, 원래 글 보존",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "performanceRecommendations",
+        "updatePerformanceRecommendation",
+        "composeBlog"
+      ],
+      "baseline_test": "apps/extension/tests/simple-compose.test.tsx",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx",
+      "additional_web_tests": [
+        "apps/web/tests/workflow.test.tsx",
+        "apps/web/tests/writer.test.tsx"
+      ]
+    },
+    {
+      "id": "F26",
+      "preserve": "SmartStore 추적 ID·공식 nt_* 입력·기존 query·글 연결·기여 지표",
+      "target": "성과 > 스토어 / 웹, 선택 연결 유지",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "buildTrackingLink"
+      ],
+      "baseline_test": "tests/integration/test_performance_api.py",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx"
+    },
+    {
+      "id": "F27",
+      "preserve": "독립 사이트 수집/색인/노출/클릭·기간/지연·블로그와 분리",
+      "target": "성과 > 웹사이트 / 웹",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "performanceOverview",
+        "queryPerformance"
+      ],
+      "baseline_test": "tests/unit/test_performance.py",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx"
+    },
+    {
+      "id": "F28",
+      "preserve": "SearchAd 계정 성과·기간별 조회·콘텐츠 공백 추천",
+      "target": "성과 > 광고 계정 / 웹; 내 블로그 지표와 별도",
+      "existing_ui": "apps/extension/entrypoints/research/App.tsx",
+      "client_methods": [
+        "adPerformance"
+      ],
+      "baseline_test": "apps/extension/tests/research.test.tsx",
+      "web_acceptance": "implemented; P2-B scoped API/shared-web automated checks; real account/user acceptance pending",
+      "web_ui": "packages/workbench/src/PerformanceWorkspace.tsx",
+      "web_test": "apps/web/tests/performance.test.tsx"
+    },
+    {
+      "id": "F29",
+      "preserve": "현재 탭 검색어·SERP 수집·Blog Inspector·파서 실패/미지원 안내",
+      "target": "키워드 찾기 > 현재 페이지 자료 / 웹+확장; 확장 단독 기능도 유지",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "analyze"
+      ],
+      "baseline_test": "apps/extension/tests/parsers.test.ts",
+      "web_acceptance": "pending: extension collection remains; no web/extension bridge contract or intake UI"
+    },
+    {
+      "id": "F30",
+      "preserve": "최신 Draft 제목/본문/태그·블로그 ID·Health Check·Job 이력·임시저장 신호",
+      "target": "글쓰기·내 원고 > 네이버 임시저장 / 웹 및 기존 확장, 별도 로그인 브라우저",
+      "existing_ui": "apps/extension/entrypoints/sidepanel/App.tsx",
+      "client_methods": [
+        "startPublishJob",
+        "getPublishJob",
+        "latestPublishJob"
+      ],
+      "baseline_test": "tests/unit/test_publisher.py",
+      "web_acceptance": "implemented; automated P1 contract checks; live/user acceptance pending",
+      "web_ui": "packages/workbench/src/DraftEditor.tsx",
+      "web_test": "apps/web/tests/writer.test.tsx"
+    }
+  ]
+}

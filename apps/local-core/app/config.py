@@ -31,19 +31,23 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = ""
 
-    # OpenAI-compatible endpoint (V2): a local Codex OAuth proxy, Ollama's OpenAI
-    # endpoint, LM Studio, etc. Prompts LEAVE the machine only when the user
-    # explicitly sets LLM_PROVIDER=openai_compat (docs/11).
+    # Official Codex CLI subprocess provider. Authentication remains inside the
+    # CLI (`codex login`); Local Core never reads or copies OAuth credentials.
+    codex_cli_executable: str = "codex"
+    codex_cli_model: str = "gpt-5.6-sol"
+    codex_cli_reasoning: str = "high"
+    codex_cli_timeout_seconds: float = 300.0
+
+    # OpenAI-compatible endpoint for an explicitly configured trusted service.
+    # Prompts leave the machine only when the user selects a remote provider.
     openai_compat_base_url: str = "http://127.0.0.1:8787/v1"
     openai_compat_api_key: str = ""
     openai_compat_model: str = ""
-    codex_proxy_autostart: bool = False
-    codex_proxy_cmd: str = "npx -y @thkdog/codex-openai-proxy"
-    codex_auth_file: Path = Path.home() / ".codex" / "auth.json"
 
     local_core_host: str = "127.0.0.1"
     local_core_port: int = 3719
     local_core_token: str = ""
+    web_build_dir: Path = ROOT_DIR / "apps" / "web" / "dist"
     publisher_cdp_url: str = "http://127.0.0.1:9222"
 
     # Self-imposed monthly call limits, deliberately below official quotas (docs/10).
@@ -63,6 +67,15 @@ class Settings(BaseSettings):
     usage_warn_ratio: float = 0.8
 
     db_path: Path = DATA_DIR / "ncos.db"
+
+    @property
+    def web_origin(self) -> str:
+        return f"http://127.0.0.1:{self.local_core_port}"
+
+    @property
+    def web_auth_path(self) -> Path:
+        # Session credentials are separate from content and scoped to this DB.
+        return self.db_path.parent / f".{self.db_path.name}.web-auth.sqlite3"
 
     @property
     def hub_configured(self) -> bool:
@@ -106,11 +119,8 @@ class Settings(BaseSettings):
             "naver_hub": "set" if self.hub_configured else "missing",
             "naver_searchad": "set" if self.searchad_configured else "missing",
             "llm_provider": self.llm_provider or "missing",
-            "openai_compat": (
-                ("autostart" if self.codex_proxy_autostart else "manual")
-                if self.llm_provider == "openai_compat"
-                else "inactive"
-            ),
+            "codex_cli": "selected" if self.llm_provider == "codex_cli" else "inactive",
+            "openai_compat": "manual" if self.llm_provider == "openai_compat" else "inactive",
             "local_core_token": "set" if (self.local_core_token or TOKEN_FILE.exists()) else "generated-on-start",
         }
 

@@ -12,7 +12,7 @@ while IFS= read -r tracked_path; do
         violations+=("$tracked_path")
       fi
       ;;
-    *.db|*.db-*|*.sqlite|*.sqlite3|*/local_core_token.txt|*/auth.json|data/chrome-automation-profile/*)
+    *.db|*.db-*|*.sqlite|*.sqlite-*|*.sqlite3|*.sqlite3-*|*/local_core_token.txt|*/auth.json|data/chrome-automation-profile/*)
       violations+=("$tracked_path")
       ;;
   esac

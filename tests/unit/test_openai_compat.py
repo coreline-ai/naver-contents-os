@@ -70,12 +70,12 @@ def test_auth_rejection_mentions_codex_login(status):
         provider.generate("x")
 
 
-def test_connection_failure_mentions_proxy_startup():
+def test_connection_failure_mentions_endpoint_startup():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
     provider = make_provider(handler, model="m")
-    with pytest.raises(LLMError, match="프록시"):
+    with pytest.raises(LLMError, match="엔드포인트"):
         provider.generate("x")
 
 

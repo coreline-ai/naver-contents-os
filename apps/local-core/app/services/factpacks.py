@@ -7,10 +7,11 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models_db import Draft, FactPack, FactPackVersion, Keyword, KeywordSnapshot
+from app.errors import FactPackVersionConflict
 from intelligence.keyword.models import clean_title
 from intelligence.questions import extract_candidates
 from providers.models import SearchLandscape
@@ -313,6 +314,7 @@ class FactPackService:
         *,
         selected_evidence_ids: list[str],
         status: str = "draft",
+        expected_version: int | None = None,
     ) -> dict | None:
         if status not in FACTPACK_STATUSES:
             raise ValueError("invalid FactPack status")
@@ -320,6 +322,7 @@ class FactPackService:
         if len(selected) != len(selected_evidence_ids):
             raise ValueError("selected evidence ids must be unique")
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             pack = session.get(FactPack, fact_pack_id)
             if pack is None:
                 return None
@@ -330,6 +333,8 @@ class FactPackService:
             )
             if latest is None:
                 raise ValueError("FactPack has no version")
+            if expected_version is not None and latest.version != expected_version:
+                raise FactPackVersionConflict("다른 화면에서 근거 자료를 변경했습니다. 최신 버전을 확인하고 다시 승인하세요.")
             known = {str(item.get("id")) for item in latest.evidence}
             unknown = selected - known
             if unknown:

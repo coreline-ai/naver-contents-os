@@ -70,7 +70,7 @@ export function parseQuery(doc: Document, locationHref: string): string {
   }
 }
 
-export function parseSerp(doc: Document, locationHref: string, limit = 20): SerpParse {
+export function parseSerp(doc: Document, locationHref: string, limit = 10): SerpParse {
   try {
     const query = parseQuery(doc, locationHref);
     const results: ParsedSerpResult[] = [];
