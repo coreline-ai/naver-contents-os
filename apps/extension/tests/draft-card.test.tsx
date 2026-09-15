@@ -40,10 +40,14 @@ const draft: DraftDetail = {
 const savedJob: PublishJob = {
   job_id: 5,
   draft_id: 11,
+  transport: 'dedicated_chrome_cdp',
+  draft_version: 2,
+  asset_manifest_version: 0,
   status: 'draft_saved',
   stage: 'draft_save',
   error_code: null,
   detail: '',
+  verification: {},
   history: [],
 };
 

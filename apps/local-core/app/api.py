@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app import deps, errors
@@ -12,10 +13,11 @@ from app.auth import require_token
 from app.services.analyze import AnalyzeService
 from app.services.composer import BlogComposerService
 from app.services.drafts import DraftService
+from app.services.draft_assets import DraftAssetService
 from app.services.factpacks import FactPackService
 from app.services.intent import IntentBoardService
 from app.services.work import TodayWorkService
-from app.services.publishing import PublishService
+from app.services.publishing import PublishPreconditionError, PublishService
 from app.services.published import PublishedContentService
 from app.services.performance import PerformanceService
 from app.services.research import ResearchService
@@ -34,6 +36,10 @@ def get_analyze_service() -> AnalyzeService:
 
 def get_draft_service_factory() -> Callable[[bool], DraftService]:
     return deps.get_draft_service
+
+
+def get_draft_asset_service() -> DraftAssetService:
+    return deps.get_draft_asset_service()
 
 
 def get_publish_service() -> PublishService:
@@ -996,6 +1002,7 @@ class PublishJobCreateRequest(BaseModel):
     blog_id: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
     tags: list[Annotated[str, Field(max_length=50)]] = Field(default_factory=list, max_length=10)
     expected_version: int | None = Field(default=None, ge=1)
+    transport: Literal["dedicated_chrome_cdp", "current_chrome_extension"] = "dedicated_chrome_cdp"
 
     @field_validator("tags")
     @classmethod
@@ -1011,6 +1018,70 @@ class PublishJobResponse(BaseModel):
     error_code: str | None
     detail: str
     history: list[dict]
+    transport: str = "dedicated_chrome_cdp"
+    draft_version: int = 1
+    asset_manifest_version: int = 0
+    verification: dict = Field(default_factory=dict)
+
+
+class DraftAssetCreateRequest(BaseModel):
+    draft_version: int = Field(ge=1)
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: Literal["image/png", "image/jpeg", "image/webp"]
+    data_base64: str = Field(min_length=1, max_length=17_000_000)
+    position: int = Field(ge=0, le=9)
+    anchor_after: int = Field(default=0, ge=0, le=1000)
+    rights_status: Literal["approved"]
+
+
+class DraftAssetGenerateRequest(BaseModel):
+    draft_version: int = Field(ge=1)
+    count: int = Field(default=3, ge=1, le=3)
+
+
+class DraftAssetResponse(BaseModel):
+    asset_id: int
+    draft_id: int
+    draft_version: int
+    filename: str
+    mime_type: str
+    byte_size: int
+    sha256: str
+    position: int
+    anchor_after: int
+    rights_status: str
+    created_at: str | None
+
+
+class PublishJobCommandResponse(BaseModel):
+    job_id: int
+    draft_id: int
+    draft_version: int
+    blog_id: str
+    title: str
+    body: str
+    title_hash: str
+    body_hash: str
+    body_chars: int
+    tags: list[str]
+    assets: list[dict]
+
+
+class PublishJobEventRequest(BaseModel):
+    stage: Literal[
+        "browser_attach", "health_check", "prepare_editor", "input_title", "input_body",
+        "upload_images", "input_tags", "draft_save", "reopen_verify",
+    ]
+    status: Literal["running", "passed", "failed"]
+    error_code: str | None = Field(default=None, max_length=80)
+    detail: str = Field(default="", max_length=2000)
+    verification: dict | None = None
+
+
+class PublisherHeartbeatRequest(BaseModel):
+    extension_id: str = Field(min_length=1, max_length=100)
+    version: str = Field(min_length=1, max_length=40)
+    active_url: str = Field(default="", max_length=1000)
 
 
 @router.post("/drafts", status_code=201, response_model=DraftCreateResponse)
@@ -1260,6 +1331,57 @@ def add_draft_version(
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": str(exc)}) from exc
 
 
+@router.post("/drafts/{draft_id}/assets", status_code=201, response_model=DraftAssetResponse)
+def add_draft_asset(
+    draft_id: int,
+    request: DraftAssetCreateRequest,
+    service: DraftAssetService = Depends(get_draft_asset_service),
+) -> dict:
+    try:
+        return service.add(draft_id, **request.model_dump())
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if "not found" in message else 400
+        raise HTTPException(status_code=status, detail={"code": "asset_invalid", "message": message}) from exc
+
+
+@router.get("/drafts/{draft_id}/assets", response_model=list[DraftAssetResponse])
+def list_draft_assets(
+    draft_id: int,
+    draft_version: int = Query(ge=1),
+    service: DraftAssetService = Depends(get_draft_asset_service),
+) -> list[dict]:
+    return service.list(draft_id, draft_version)
+
+
+@router.post(
+    "/drafts/{draft_id}/assets/generate-guide",
+    status_code=201,
+    response_model=list[DraftAssetResponse],
+)
+def generate_draft_guide_assets(
+    draft_id: int,
+    request: DraftAssetGenerateRequest,
+    service: DraftAssetService = Depends(get_draft_asset_service),
+) -> list[dict]:
+    try:
+        return service.generate_guide_set(draft_id, request.draft_version, request.count)
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if "not found" in message else 400
+        raise HTTPException(status_code=status, detail={"code": "asset_generation_failed", "message": message}) from exc
+
+
+@router.delete("/drafts/{draft_id}/assets/{asset_id}", status_code=204)
+def delete_draft_asset(
+    draft_id: int,
+    asset_id: int,
+    service: DraftAssetService = Depends(get_draft_asset_service),
+) -> None:
+    if not service.delete(draft_id, asset_id):
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft asset not found"})
+
+
 @router.post(
     "/drafts/{draft_id}/publish-jobs",
     status_code=202,
@@ -1271,13 +1393,21 @@ def start_publish_job(
     background_tasks: BackgroundTasks,
     service: PublishService = Depends(get_publish_service),
 ) -> dict:
-    task = service.prepare(
-        draft_id,
-        blog_id=request.blog_id,
-        tags=request.tags,
-        cdp_url=deps.get_settings().publisher_cdp_url,
-        expected_version=request.expected_version,
-    )
+    if request.transport == "current_chrome_extension":
+        readiness = service.readiness(deps.get_settings().publisher_cdp_url)
+        if not readiness["current_chrome_extension"]["ready"]:
+            raise HTTPException(status_code=409, detail={"code": "browser_transport_unavailable", "message": "현재 Chrome 확장이 연결되지 않았습니다."})
+    try:
+        task = service.prepare(
+            draft_id,
+            blog_id=request.blog_id,
+            tags=request.tags,
+            cdp_url=deps.get_settings().publisher_cdp_url,
+            expected_version=request.expected_version,
+            transport=request.transport,
+        )
+    except PublishPreconditionError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft not found"})
     job = service.get_job(task.job_id)
@@ -1286,7 +1416,11 @@ def start_publish_job(
             status_code=500,
             detail={"code": "job_create_failed", "message": "publish job not created"},
         )
-    background_tasks.add_task(service.run, task)
+    if task.transport == "current_chrome_extension":
+        service.mark_waiting_extension(task)
+        job = service.get_job(task.job_id) or job
+    elif not task.reused or job["status"] == "failed":
+        background_tasks.add_task(service.run, task)
     return job
 
 
@@ -1310,3 +1444,86 @@ def get_publish_job(
             detail={"code": "not_found", "message": "publish job not found"},
         )
     return job
+
+
+@router.get("/publish-jobs/{job_id}/command", response_model=PublishJobCommandResponse)
+def get_publish_job_command(
+    job_id: int,
+    lease_owner: str | None = Query(default=None, min_length=1, max_length=100),
+    service: PublishService = Depends(get_publish_service),
+) -> dict:
+    try:
+        command = service.command(job_id, lease_owner=lease_owner)
+    except (ValueError, errors.DraftVersionConflict) as exc:
+        raise HTTPException(status_code=409, detail={"code": "publish_command_conflict", "message": str(exc)}) from exc
+    if command is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish job not found"})
+    return command
+
+
+@router.get("/publisher/next-command", response_model=PublishJobCommandResponse | None)
+def get_next_publish_command(
+    lease_owner: str = Query(min_length=1, max_length=100),
+    blog_id: list[str] = Query(default=[]),
+    service: PublishService = Depends(get_publish_service),
+) -> dict | None:
+    try:
+        return service.next_extension_command(lease_owner, blog_ids=blog_id)
+    except (ValueError, errors.DraftVersionConflict) as exc:
+        raise HTTPException(status_code=409, detail={"code": "publish_command_conflict", "message": str(exc)}) from exc
+
+
+@router.get("/publish-jobs/{job_id}/assets/{asset_id}")
+def download_publish_asset(
+    job_id: int,
+    asset_id: int,
+    service: PublishService = Depends(get_publish_service),
+):
+    asset = service.asset_for_job(job_id, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish asset not found"})
+    return FileResponse(
+        asset.local_path,
+        media_type=asset.mime_type,
+        filename=asset.filename,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.post("/publish-jobs/{job_id}/events", response_model=PublishJobResponse)
+def record_publish_job_event(
+    job_id: int,
+    request: PublishJobEventRequest,
+    service: PublishService = Depends(get_publish_service),
+) -> dict:
+    try:
+        job = service.record_extension_event(job_id, **request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "publish_event_conflict", "message": str(exc)}) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish job not found"})
+    return job
+
+
+@router.post("/publish-jobs/{job_id}/retry", response_model=PublishJobResponse)
+def retry_publish_job(
+    job_id: int,
+    service: PublishService = Depends(get_publish_service),
+) -> dict:
+    job = service.retry(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish job not found"})
+    return job
+
+
+@router.post("/publisher/extension-heartbeat")
+def publisher_extension_heartbeat(
+    request: PublisherHeartbeatRequest,
+    service: PublishService = Depends(get_publish_service),
+) -> dict:
+    return service.heartbeat(**request.model_dump())
+
+
+@router.get("/publisher/readiness")
+def publisher_readiness(service: PublishService = Depends(get_publish_service)) -> dict:
+    return service.readiness(deps.get_settings().publisher_cdp_url)

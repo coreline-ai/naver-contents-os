@@ -36,7 +36,7 @@ const composed: BlogComposeResponse = {
     draft_id: 31,
     version: 1,
     title: plan.title,
-    body: '제주도 가족여행 완성 본문입니다.\n\n준비물을 차근차근 확인합니다.',
+    body: '제주도 가족여행 완성 본문과 준비물을 차근차근 확인합니다. '.repeat(150),
     source_snapshot_id: 17,
     fact_pack_id: 8,
     fact_pack_version: 2,
@@ -179,6 +179,21 @@ describe('one-action complete blog flow', () => {
         return response(composed, 201);
       }
       if (url.endsWith('/v1/drafts/31')) return response(detail);
+      if (url.includes('/v1/drafts/31/assets?draft_version=1')) return response(
+        [0, 1, 2].map((position) => ({
+          asset_id: position + 1,
+          draft_id: 31,
+          draft_version: 1,
+          filename: `image-${position + 1}.png`,
+          mime_type: 'image/png',
+          byte_size: 1024,
+          sha256: `hash-${position + 1}`,
+          position,
+          anchor_after: position + 1,
+          rights_status: 'approved',
+          created_at: '2026-09-04T00:00:00Z',
+        })),
+      );
       if (url.endsWith('/v1/drafts/31/publish-jobs')) {
         publishCalls += 1;
         return response({

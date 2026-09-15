@@ -406,6 +406,54 @@ export interface PublishJob {
   error_code: string | null;
   detail: string;
   history: PublishJobHistoryEntry[];
+  transport: 'dedicated_chrome_cdp' | 'current_chrome_extension';
+  draft_version: number;
+  asset_manifest_version: number;
+  verification: Record<string, unknown>;
+}
+
+export interface DraftAsset {
+  asset_id: number;
+  draft_id: number;
+  draft_version: number;
+  filename: string;
+  mime_type: 'image/png' | 'image/jpeg' | 'image/webp';
+  byte_size: number;
+  sha256: string;
+  position: number;
+  anchor_after: number;
+  rights_status: 'approved';
+  created_at: string | null;
+}
+
+export interface PublishCommandAsset extends DraftAsset {
+  download_url: string;
+  native_path: string;
+}
+
+export interface PublishCommand {
+  job_id: number;
+  draft_id: number;
+  draft_version: number;
+  blog_id: string;
+  title: string;
+  body: string;
+  title_hash: string;
+  body_hash: string;
+  body_chars: number;
+  tags: string[];
+  assets: PublishCommandAsset[];
+}
+
+export interface PublisherReadiness {
+  current_chrome_extension: {
+    ready: boolean;
+    last_seen: string | null;
+    extension_id?: string;
+    version?: string;
+    active_url?: string;
+  };
+  dedicated_chrome_cdp: { ready: boolean; url: string };
 }
 
 export interface AnalyzeResponse {

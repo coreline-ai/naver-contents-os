@@ -49,7 +49,7 @@ def test_performance_upgrade_and_rollback_preserve_existing_drafts(tmp_path):
         assert conn.scalar(text("SELECT COUNT(*) FROM published_contents")) == 1
     command.upgrade(config, "head")
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "b1f6e8a2c9d4"
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "c7a4e91d2f60"
         assert conn.execute(text("PRAGMA foreign_key_check")).all() == []
         assert conn.scalar(text("SELECT body FROM draft_versions")) == "원문 보존 확인"
     engine.dispose()

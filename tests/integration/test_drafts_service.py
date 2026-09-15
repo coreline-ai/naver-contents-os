@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import base64
 import json
 
 import pytest
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.db import make_engine, make_session_factory
 from app.models_db import Base, Draft, DraftVersion, Keyword, KeywordSnapshot, PublishJob
 from app.services.drafts import DraftService, SqlJobStore, output_token_budget, split_generated
+from app.services.draft_assets import DraftAssetService
 from app.services.publishing import PublishService
 from providers.llm.base import LLMError
 from providers.llm.codex_cli import CodexCliProvider
@@ -480,6 +482,98 @@ def test_publish_service_distinguishes_unhandled_runner_failure(sessions):
     assert "sensitive editor detail" not in job["detail"]
 
 
+def test_draft_assets_are_version_pinned_and_require_approval(sessions, tmp_path):
+    created = DraftService(sessions, None).create_draft("이미지 원고", PLAN_ITEM)
+    service = DraftAssetService(sessions, root=tmp_path / "assets")
+    png = b"\x89PNG\r\n\x1a\n" + b"safe-image"
+    asset = service.add(
+        created["draft_id"], draft_version=1, filename="대표 사진.png",
+        mime_type="image/png", data_base64=base64.b64encode(png).decode(),
+        position=0, anchor_after=0, rights_status="approved",
+    )
+    assert asset["draft_version"] == 1
+    assert asset["sha256"]
+    assert service.list(created["draft_id"], 1) == [asset]
+    assert service.manifest_version(created["draft_id"], 1) == asset["asset_id"]
+    with pytest.raises(ValueError, match="rights approval"):
+        service.add(
+            created["draft_id"], draft_version=1, filename="미승인.png",
+            mime_type="image/png", data_base64=base64.b64encode(png + b"2").decode(),
+            position=1, anchor_after=1, rights_status="pending",
+        )
+
+
+def test_app_generates_three_valid_original_guide_images_idempotently(sessions, tmp_path):
+    created = DraftService(sessions, None).create_draft("추석선물", PLAN_ITEM)
+    root = tmp_path / "assets"
+    service = DraftAssetService(sessions, root=root)
+
+    generated = service.generate_guide_set(created["draft_id"], 1)
+    repeated = service.generate_guide_set(created["draft_id"], 1)
+
+    assert len(generated) == len(repeated) == 3
+    assert [item["asset_id"] for item in repeated] == [item["asset_id"] for item in generated]
+    assert [item["position"] for item in generated] == [0, 1, 2]
+    assert [item["anchor_after"] for item in generated] == [3, 6, 9]
+    assert all(item["rights_status"] == "approved" for item in generated)
+    for item in generated:
+        path = next(root.rglob(f'{item["sha256"]}.png'))
+        data = path.read_bytes()
+        assert data.startswith(b"\x89PNG\r\n\x1a\n")
+        assert data.endswith(b"IEND\xaeB`\x82")
+        assert len(data) > 1_000
+
+
+def test_extension_publish_job_is_idempotent_and_requires_reopen_verification(sessions, tmp_path):
+    created = DraftService(sessions, None).create_draft("앱 단독 저장", PLAN_ITEM)
+    DraftService(sessions, None).add_version(
+        created["draft_id"], "완성 제목", "본문" * 1600, expected_version=1,
+    )
+    assets = DraftAssetService(sessions, root=tmp_path / "assets")
+    for position in range(3):
+        data = b"\x89PNG\r\n\x1a\n" + bytes([position]) * 16
+        assets.add(
+            created["draft_id"], draft_version=2, filename=f"image-{position}.png",
+            mime_type="image/png", data_base64=base64.b64encode(data).decode(),
+            position=position, anchor_after=position * 2, rights_status="approved",
+        )
+    service = PublishService(sessions)
+    first = service.prepare(
+        created["draft_id"], blog_id="target_blog", tags=["정리"], cdp_url="",
+        expected_version=2, transport="current_chrome_extension",
+    )
+    second = service.prepare(
+        created["draft_id"], blog_id="target_blog", tags=["정리"], cdp_url="",
+        expected_version=2, transport="current_chrome_extension",
+    )
+    assert first is not None and second is not None
+    assert first.job_id == second.job_id
+    assert second.reused is True
+    service.mark_waiting_extension(first)
+    command = service.command(first.job_id)
+    assert command is not None
+    assert command["draft_version"] == 2
+    assert command["body_chars"] >= 3000
+    assert len(command["assets"]) == 3
+
+    failed = service.record_extension_event(
+        first.job_id, stage="reopen_verify", status="passed",
+        verification={"actual_title_hash": command["title_hash"], "actual_body_hash": command["body_hash"], "body_chars": 3200,
+                      "image_count": 2, "remote_image_count": 2},
+    )
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "verification_failed"
+    restarted = service.retry(first.job_id)
+    assert restarted["job_id"] == first.job_id
+    passed = service.record_extension_event(
+        first.job_id, stage="reopen_verify", status="passed",
+        verification={"actual_title_hash": command["title_hash"], "actual_body_hash": command["body_hash"], "body_chars": 3200,
+                      "image_count": 3, "remote_image_count": 3},
+    )
+    assert passed["status"] == "verified_draft_saved"
+    assert passed["verification"]["image_count"] == 3
+
+
 def test_draft_snapshot_lineage_requires_same_keyword(sessions):
     with sessions() as session:
         keyword = Keyword(text="애드포스트 승인")
@@ -810,6 +904,17 @@ def test_publish_job_api_starts_existing_draft_and_exposes_status(draft_api):
     )
     client.app.dependency_overrides[api_module.get_publish_service] = lambda: publisher
 
+    before_heartbeat = client.get("/v1/publisher/readiness", headers=_headers(token))
+    assert before_heartbeat.status_code == 200
+    assert before_heartbeat.json()["current_chrome_extension"]["ready"] is False
+    heartbeat = client.post(
+        "/v1/publisher/extension-heartbeat",
+        json={"extension_id": "test-extension", "version": "0.2.0", "active_url": "https://blog.naver.com/"},
+        headers=_headers(token),
+    )
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["current_chrome_extension"]["ready"] is True
+
     started = client.post(
         f"/v1/drafts/{draft['draft_id']}/publish-jobs",
         json={"blog_id": "target_blog", "tags": [" 태그1 ", "태그2"]},
@@ -825,6 +930,147 @@ def test_publish_job_api_starts_existing_draft_and_exposes_status(draft_api):
     assert captured["title"] == "검수 완료 제목"
     assert captured["body"] == "검수 완료 본문"
     assert captured["tags"] == ["태그1", "태그2"]
+
+
+def test_extension_publish_api_upload_command_retry_and_verified_completion(draft_api, tmp_path):
+    client, token, sessions = draft_api
+    from app import api as api_module
+
+    service = DraftService(sessions, None)
+    draft = service.create_draft("후쿠오카 여행", PLAN_ITEM)
+    version = service.add_version(
+        draft["draft_id"],
+        "후쿠오카 여행 완전 가이드",
+        "후쿠오카 여행 준비와 현지 동선을 자세히 설명합니다. " * 110,
+        note="앱 단독 검수본",
+    )
+    assets = DraftAssetService(sessions, root=tmp_path / "draft-assets")
+    publisher = PublishService(sessions)
+    publisher._assets = assets
+    client.app.dependency_overrides[api_module.get_draft_asset_service] = lambda: assets
+    client.app.dependency_overrides[api_module.get_publish_service] = lambda: publisher
+    publisher.heartbeat(extension_id="extension-a", version="0.2.0", active_url="https://blog.naver.com/")
+
+    for position in range(3):
+        image_data = base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"test-image" + bytes([position])
+        ).decode()
+        uploaded = client.post(
+            f"/v1/drafts/{draft['draft_id']}/assets",
+            json={
+                "draft_version": version["version"],
+                "filename": f"trip-{position}.png",
+                "mime_type": "image/png",
+                "data_base64": image_data,
+                "position": position,
+                "anchor_after": position + 1,
+                "rights_status": "approved",
+            },
+            headers=_headers(token),
+        )
+        assert uploaded.status_code == 201
+
+    listed = client.get(
+        f"/v1/drafts/{draft['draft_id']}/assets?draft_version={version['version']}",
+        headers=_headers(token),
+    )
+    assert listed.status_code == 200
+    assert len(listed.json()) == 3
+
+    request = {
+        "blog_id": "sence4u",
+        "tags": ["후쿠오카여행"],
+        "expected_version": version["version"],
+        "transport": "current_chrome_extension",
+    }
+    started = client.post(
+        f"/v1/drafts/{draft['draft_id']}/publish-jobs",
+        json=request,
+        headers=_headers(token),
+    )
+    repeated = client.post(
+        f"/v1/drafts/{draft['draft_id']}/publish-jobs",
+        json=request,
+        headers=_headers(token),
+    )
+    assert started.status_code == repeated.status_code == 202
+    assert started.json()["job_id"] == repeated.json()["job_id"]
+    assert started.json()["status"] == "waiting_extension"
+
+    job_id = started.json()["job_id"]
+    missing_blog = client.get(
+        "/v1/publisher/next-command?lease_owner=legacy-extension",
+        headers=_headers(token),
+    )
+    assert missing_blog.status_code == 200
+    assert missing_blog.json() is None
+    wrong_blog = client.get(
+        "/v1/publisher/next-command?lease_owner=wrong-profile&blog_id=antifreeid",
+        headers=_headers(token),
+    )
+    assert wrong_blog.status_code == 200
+    assert wrong_blog.json() is None
+    still_waiting = client.get(f"/v1/publish-jobs/{job_id}", headers=_headers(token))
+    assert still_waiting.status_code == 200
+    assert still_waiting.json()["status"] == "waiting_extension"
+
+    command = client.get(
+        "/v1/publisher/next-command?lease_owner=extension-a&blog_id=sence4u",
+        headers=_headers(token),
+    )
+    assert command.status_code == 200
+    assert command.json()["draft_version"] == version["version"]
+    assert command.json()["body_chars"] >= 3000
+    assert len(command.json()["assets"]) == 3
+    leased = client.get(
+        f"/v1/publish-jobs/{job_id}/command?lease_owner=extension-b",
+        headers=_headers(token),
+    )
+    assert leased.status_code == 409
+    downloaded = client.get(
+        command.json()["assets"][0]["download_url"], headers=_headers(token)
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"].startswith("image/png")
+
+    failed = client.post(
+        f"/v1/publish-jobs/{job_id}/events",
+        json={
+            "stage": "reopen_verify",
+            "status": "passed",
+            "verification": {
+                "actual_title_hash": command.json()["title_hash"],
+                "actual_body_hash": command.json()["body_hash"],
+                "body_chars": command.json()["body_chars"],
+                "image_count": 2,
+                "remote_image_count": 2,
+            },
+        },
+        headers=_headers(token),
+    )
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "failed"
+    retried = client.post(f"/v1/publish-jobs/{job_id}/retry", headers=_headers(token))
+    assert retried.status_code == 200
+    assert retried.json()["job_id"] == job_id
+
+    completed = client.post(
+        f"/v1/publish-jobs/{job_id}/events",
+        json={
+            "stage": "reopen_verify",
+            "status": "passed",
+            "verification": {
+                "actual_title_hash": command.json()["title_hash"],
+                "actual_body_hash": command.json()["body_hash"],
+                "body_chars": command.json()["body_chars"],
+                "image_count": 3,
+                "remote_image_count": 3,
+            },
+        },
+        headers=_headers(token),
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "verified_draft_saved"
 
 
 def test_publish_job_api_validates_target_and_missing_records(draft_api):
@@ -852,6 +1098,38 @@ def test_publish_job_api_validates_target_and_missing_records(draft_api):
 
     missing_job = client.get("/v1/publish-jobs/999", headers=_headers(token))
     assert missing_job.status_code == 404
+
+
+def test_extension_publish_preflight_distinguishes_transport_and_images(draft_api):
+    client, token, sessions = draft_api
+    service = DraftService(sessions, None)
+    draft = service.create_draft("확장 사전 점검", PLAN_ITEM)
+    service.add_version(draft["draft_id"], "완성 제목", "완성 본문 " * 700, expected_version=1)
+    payload = {
+        "blog_id": "sence4u",
+        "tags": [],
+        "expected_version": 2,
+        "transport": "current_chrome_extension",
+    }
+    disconnected = client.post(
+        f"/v1/drafts/{draft['draft_id']}/publish-jobs",
+        json=payload,
+        headers=_headers(token),
+    )
+    assert disconnected.status_code == 409
+    assert disconnected.json()["detail"]["code"] == "browser_transport_unavailable"
+    client.post(
+        "/v1/publisher/extension-heartbeat",
+        json={"extension_id": "extension-a", "version": "0.2.0"},
+        headers=_headers(token),
+    )
+    no_images = client.post(
+        f"/v1/drafts/{draft['draft_id']}/publish-jobs",
+        json=payload,
+        headers=_headers(token),
+    )
+    assert no_images.status_code == 422
+    assert no_images.json()["detail"]["code"] == "image_assets_not_ready"
 
 
 def test_version_precondition_rejects_stale_editor_without_appending(draft_api):

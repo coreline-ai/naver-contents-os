@@ -10,8 +10,8 @@ export default defineConfig({
   manifest: {
     name: 'Naver Content OS',
     description: '네이버 키워드 분석과 콘텐츠 기획 사이드패널',
-    permissions: ['sidePanel', 'storage', 'activeTab', 'tabs'],
-    host_permissions: ['http://127.0.0.1/*'],
+    permissions: ['sidePanel', 'storage', 'activeTab', 'tabs', 'debugger'],
+    host_permissions: ['http://127.0.0.1/*', 'http://localhost/*', '*://blog.naver.com/*'],
     action: { default_title: 'Naver Content OS' },
   },
 });

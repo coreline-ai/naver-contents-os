@@ -6,13 +6,14 @@ import { Writer, type ImprovementInput } from '@ncos/workbench';
 import { CoreClient, CoreError } from '@ncos/core-client';
 import type { DraftDetail } from '@ncos/contracts';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const detail: DraftDetail = { draft_id: 7, keyword: '후쿠오카 여행', blog_type: 'HOWTO', title: '후쿠오카 여행 안내', source_snapshot_id: 1, user_status: 'editing', fact_pack_id: null, fact_pack_version: null, created_at: '2026-09-06T10:00:00Z', provider: 'test', model: 'fixture', prompt_version: 'fixture', plan: { order: 1, title: '여행 안내', blog_type: 'HOWTO', target_keyword: '후쿠오카 여행', angle: '', reason: '', generation_status: 'ready', series_prev: null, series_next: null }, versions: [{ version: 1, title: '후쿠오카 여행 안내', body: '검수용 본문입니다. 실제 여행 정보가 아닙니다.', note: '', created_at: '2026-09-06T10:00:00Z' }] };
+const detail: DraftDetail = { draft_id: 7, keyword: '후쿠오카 여행', blog_type: 'HOWTO', title: '후쿠오카 여행 안내', source_snapshot_id: 1, user_status: 'editing', fact_pack_id: null, fact_pack_version: null, created_at: '2026-09-06T10:00:00Z', provider: 'test', model: 'fixture', prompt_version: 'fixture', plan: { order: 1, title: '여행 안내', blog_type: 'HOWTO', target_keyword: '후쿠오카 여행', angle: '', reason: '', generation_status: 'ready', series_prev: null, series_next: null }, versions: [{ version: 1, title: '후쿠오카 여행 안내', body: '검수용 본문입니다. 실제 여행 정보가 아닙니다. '.repeat(150), note: '', created_at: '2026-09-06T10:00:00Z' }] };
 const composeResult = { draft: { draft_id: 7 }, quality: { score: 94, char_count: 2500, issues: [] }, suggested_tags: ['여행'] };
-const preferences = { blogId: '', tags: '', allowSensitiveUnknown: true };
+let preferences = { blogId: '', tags: '', allowSensitiveUnknown: true };
 let root: Root, host: HTMLDivElement, query: QueryClient;
-let client: { llmStatus: ReturnType<typeof vi.fn>; composeBlog: ReturnType<typeof vi.fn>; getDraft: ReturnType<typeof vi.fn>; addDraftVersion: ReturnType<typeof vi.fn>; specialized: ReturnType<typeof vi.fn>; updatePerformanceRecommendation: ReturnType<typeof vi.fn>; getPublishJob: ReturnType<typeof vi.fn>; latestPublishJob: ReturnType<typeof vi.fn>; startPublishJob: ReturnType<typeof vi.fn> };
+let client: { llmStatus: ReturnType<typeof vi.fn>; composeBlog: ReturnType<typeof vi.fn>; getDraft: ReturnType<typeof vi.fn>; addDraftVersion: ReturnType<typeof vi.fn>; specialized: ReturnType<typeof vi.fn>; updatePerformanceRecommendation: ReturnType<typeof vi.fn>; getPublishJob: ReturnType<typeof vi.fn>; latestPublishJob: ReturnType<typeof vi.fn>; startPublishJob: ReturnType<typeof vi.fn>; listDraftAssets: ReturnType<typeof vi.fn>; publisherReadiness: ReturnType<typeof vi.fn>; addDraftAsset: ReturnType<typeof vi.fn>; generateDraftGuideAssets: ReturnType<typeof vi.fn>; deleteDraftAsset: ReturnType<typeof vi.fn> };
 let onSaved: ReturnType<typeof vi.fn>, onDirty: ReturnType<typeof vi.fn>;
-beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host); query = new QueryClient({ defaultOptions: { queries: { retry: false } } }); onSaved = vi.fn(); onDirty = vi.fn(); client = { llmStatus: vi.fn().mockResolvedValue({ ready: true, engine: 'test', model: 'fixture' }), composeBlog: vi.fn().mockResolvedValue(composeResult), getDraft: vi.fn().mockResolvedValue(detail), addDraftVersion: vi.fn().mockResolvedValue({ draft_id: 7, version: 2 }), specialized: vi.fn(), updatePerformanceRecommendation: vi.fn().mockResolvedValue({ status: 'done' }), getPublishJob: vi.fn(), latestPublishJob: vi.fn().mockResolvedValue(null), startPublishJob: vi.fn() }; });
+beforeEach(() => { preferences = { blogId: '', tags: '', allowSensitiveUnknown: true }; });
+beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host); query = new QueryClient({ defaultOptions: { queries: { retry: false } } }); onSaved = vi.fn(); onDirty = vi.fn(); const assets = [0, 1, 2].map(position => ({ asset_id: position + 1, draft_id: 7, draft_version: 1, filename: `image-${position}.png`, mime_type: 'image/png', byte_size: 100, sha256: `hash-${position}`, position, anchor_after: position + 1, rights_status: 'approved', created_at: null })); client = { llmStatus: vi.fn().mockResolvedValue({ ready: true, engine: 'test', model: 'fixture' }), composeBlog: vi.fn().mockResolvedValue(composeResult), getDraft: vi.fn().mockResolvedValue(detail), addDraftVersion: vi.fn().mockResolvedValue({ draft_id: 7, version: 2 }), specialized: vi.fn(), updatePerformanceRecommendation: vi.fn().mockResolvedValue({ status: 'done' }), getPublishJob: vi.fn(), latestPublishJob: vi.fn().mockResolvedValue(null), startPublishJob: vi.fn(), listDraftAssets: vi.fn().mockResolvedValue(assets), publisherReadiness: vi.fn().mockResolvedValue({ current_chrome_extension: { ready: true }, dedicated_chrome_cdp: { ready: false, url: '' } }), addDraftAsset: vi.fn(), generateDraftGuideAssets: vi.fn().mockResolvedValue(assets), deleteDraftAsset: vi.fn() }; });
 afterEach(async () => { await act(async () => root.unmount()); query.clear(); host.remove(); vi.restoreAllMocks(); });
 async function settle() { await act(async () => { await new Promise(r => setTimeout(r, 15)); }); }
 async function render(id?: number, improvementRequest?: { input: ImprovementInput; nonce: number }) { await act(async () => { root.render(<QueryClientProvider client={query}><Writer client={client as unknown as CoreClient} improvementRequest={improvementRequest} openRequest={id ? { id, nonce: id } : null} onSaved={onSaved} onDirtyChange={onDirty} preferences={preferences} onPreferences={() => {}}/></QueryClientProvider>); }); await settle(); }
@@ -27,6 +28,19 @@ it('creates through the real client contract with all quick-writing options', as
   expect((host.querySelector('#draft-body') as HTMLTextAreaElement).value).toBe(detail.versions[0].body);
   expect(host.textContent).toContain('사실성·상위 노출을 보증하지 않습니다');
   expect(onSaved).toHaveBeenCalledWith(7, true);
+});
+it('uses tags suggested for the new draft instead of stale tags from the previous publish', async () => {
+  preferences = { ...preferences, tags: '책상정리,오래된태그' };
+  await render(); await input('#topic', '후쿠오카 여행'); await click('완성 글 만들기');
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('여행');
+});
+it('can create three original guide images through the app', async () => {
+  const generated = [0, 1, 2].map(position => ({ asset_id: position + 11, draft_id: 7, draft_version: 1, filename: `app-guide-${position + 1}.png`, mime_type: 'image/png', byte_size: 1400, sha256: `generated-${position}`, position, anchor_after: (position + 1) * 3, rights_status: 'approved', created_at: null }));
+  client.listDraftAssets.mockResolvedValueOnce([]).mockResolvedValue(generated);
+  await render(7);
+  await click('앱이 안내 이미지 3장 만들기');
+  expect(client.generateDraftGuideAssets).toHaveBeenCalledWith(7, 1);
+  expect(host.textContent).toContain('본문 이미지 · 3/3');
 });
 it('saves the edited text with its expected version and preserves original history', async () => {
   await render(7); await input('#draft-body', '사용자가 수정한 본문');

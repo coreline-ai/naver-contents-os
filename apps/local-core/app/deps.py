@@ -8,6 +8,7 @@ from app.db import make_engine, make_session_factory
 from app.services.analyze import AnalyzeService
 from app.services.composer import BlogComposerService
 from app.services.drafts import DraftService
+from app.services.draft_assets import DraftAssetService
 from app.services.factpacks import FactPackService
 from app.services.intent import IntentBoardService
 from app.services.work import TodayWorkService
@@ -170,6 +171,11 @@ def get_draft_service(use_llm: bool = False) -> DraftService:
 
 
 @lru_cache
+def get_draft_asset_service() -> DraftAssetService:
+    return DraftAssetService(get_session_factory())
+
+
+@lru_cache
 def get_publish_service() -> PublishService:
     return PublishService(get_session_factory())
 
@@ -217,6 +223,7 @@ def reset_caches() -> None:
     get_analyze_service.cache_clear()
     get_research_service.cache_clear()
     get_draft_service.cache_clear()
+    get_draft_asset_service.cache_clear()
     get_publish_service.cache_clear()
     get_published_content_service.cache_clear()
     get_fact_pack_service.cache_clear()

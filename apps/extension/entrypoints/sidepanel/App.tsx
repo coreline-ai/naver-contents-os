@@ -4,6 +4,7 @@ import type {
   BlogComposeRequest,
   BlogComposeResponse,
   BlogComposeStyle,
+  DraftAsset,
   DraftDetail,
   DraftGenerationMode,
   DraftSummary,
@@ -23,7 +24,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { PcMobileDonut } from '~/components/PcMobileDonut';
 import { CoreClient, CoreError } from '~/lib/core';
-import { MSG_GET_BLOG, MSG_GET_SERP, requestActiveTab } from '~/lib/messages';
+import { MSG_GET_BLOG, MSG_GET_SERP, MSG_RUN_PUBLISH_JOB, requestActiveTab } from '~/lib/messages';
 import type { BlogParse } from '~/lib/parsers/blog';
 import type { SerpParse } from '~/lib/parsers/serp';
 import { isSuggestionQuery, loadRecentKeywords, mergeSuggestions, recentSuggestions, rememberRecentKeyword } from '~/lib/recent-keywords';
@@ -179,6 +180,42 @@ export default function App() {
     queryFn: () => client.llmStatus(),
     enabled: settings.loaded && !!settings.token && handshake.isSuccess,
     refetchInterval: 30_000,
+  });
+  const latestDraftVersion = draft?.versions.at(-1)?.version ?? null;
+  const draftAssets = useQuery({
+    queryKey: ['draft-assets', draft?.draft_id, latestDraftVersion, settings.coreUrl],
+    queryFn: () => client.listDraftAssets(draft!.draft_id, latestDraftVersion!),
+    enabled: settings.loaded && !!settings.token && handshake.isSuccess && !!draft && latestDraftVersion != null,
+  });
+
+  const uploadDraftAssets = useMutation<
+    DraftAsset[],
+    CoreError,
+    { files: File[]; draftId: number; draftVersion: number }
+  >({
+    mutationFn: async ({ files, draftId, draftVersion }) => {
+      const existing = await client.listDraftAssets(draftId, draftVersion);
+      const uploaded: DraftAsset[] = [];
+      for (const [index, file] of files.slice(0, Math.max(0, 10 - existing.length)).entries()) {
+        const dataUrl = await fileToDataUrl(file);
+        uploaded.push(await client.addDraftAsset(draftId, {
+          draft_version: draftVersion,
+          filename: file.name,
+          mime_type: file.type as 'image/png' | 'image/jpeg' | 'image/webp',
+          data_base64: dataUrl,
+          position: existing.length + index,
+          anchor_after: existing.length + index + 1,
+          rights_status: 'approved',
+        }));
+      }
+      return uploaded;
+    },
+    onSuccess: () => void draftAssets.refetch(),
+  });
+
+  const deleteDraftAsset = useMutation<void, CoreError, { draftId: number; assetId: number }>({
+    mutationFn: ({ draftId, assetId }) => client.deleteDraftAsset(draftId, assetId),
+    onSuccess: () => void draftAssets.refetch(),
   });
 
   useEffect(() => {
@@ -344,8 +381,25 @@ export default function App() {
     CoreError,
     { draftId: number; blogId: string; tags: string[]; requestId: number }
   >({
-    mutationFn: ({ draftId, blogId, tags }) =>
-      client.startPublishJob(draftId, { blog_id: blogId, tags }),
+    mutationFn: async ({ draftId, blogId, tags }) => {
+      const latestVersion = draft?.draft_id === draftId ? draft.versions.at(-1)?.version : undefined;
+      if (browser.runtime?.id) {
+        const [active] = await browser.tabs.query({ active: true, currentWindow: true });
+        await client.publisherHeartbeat({
+          extension_id: browser.runtime.id,
+          version: browser.runtime.getManifest().version,
+          active_url: active?.url ?? '',
+        });
+      }
+      const job = await client.startPublishJob(draftId, {
+        blog_id: blogId,
+        tags,
+        expected_version: latestVersion,
+        transport: 'current_chrome_extension',
+      });
+      void browser.runtime?.sendMessage?.({ type: MSG_RUN_PUBLISH_JOB, jobId: job.job_id })?.catch(() => undefined);
+      return job;
+    },
     onSuccess: (job, variables) => {
       if (variables.requestId === draftEpoch.current) setPublishJobId(job.job_id);
     },
@@ -357,7 +411,7 @@ export default function App() {
     enabled: publishJobId != null,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      return status === 'failed' || status === 'draft_saved' ? false : 1_000;
+      return status === 'failed' || status === 'draft_saved' || status === 'verified_draft_saved' ? false : 1_000;
     },
   });
 
@@ -961,6 +1015,11 @@ export default function App() {
           referenceError={referenceError}
           onFindImages={() => void findReferenceImages()}
           onRegenerate={() => runCompleteCompose()}
+          draftAssets={draftAssets.data ?? []}
+          assetsPending={draftAssets.isFetching || uploadDraftAssets.isPending || deleteDraftAsset.isPending}
+          assetsError={uploadDraftAssets.error?.message ?? deleteDraftAsset.error?.message ?? draftAssets.error?.message ?? ''}
+          onAddAssets={(files) => latestDraftVersion && uploadDraftAssets.mutate({ files, draftId: draft.draft_id, draftVersion: latestDraftVersion })}
+          onDeleteAsset={(assetId) => deleteDraftAsset.mutate({ draftId: draft.draft_id, assetId })}
         />
       )}
 
@@ -1798,13 +1857,24 @@ const PUBLISH_STAGE_LABEL: Record<string, string> = {
   prepare_editor: '에디터 열기',
   input_title: '제목 입력',
   input_body: '본문 입력',
+  upload_images: '이미지 입력',
   input_tags: '태그 입력',
   draft_save: '임시저장 확인',
+  reopen_verify: '재열기 검증',
   publisher_runtime: '작업 확인',
 };
 
 function splitTags(value: string): string[] {
   return value.split(',').map((tag) => tag.trim()).filter(Boolean).slice(0, 10);
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(new Error(`${file.name} 파일을 읽지 못했습니다.`));
+    reader.readAsDataURL(file);
+  });
 }
 
 export function SimpleDraftCard({
@@ -1826,6 +1896,11 @@ export function SimpleDraftCard({
   referenceError,
   onFindImages,
   onRegenerate,
+  draftAssets,
+  assetsPending = false,
+  assetsError = '',
+  onAddAssets = () => undefined,
+  onDeleteAsset = () => undefined,
 }: {
   draft: DraftDetail;
   quality: ArticleQuality | null;
@@ -1845,6 +1920,11 @@ export function SimpleDraftCard({
   referenceError: string;
   onFindImages: () => void;
   onRegenerate: () => void;
+  draftAssets?: DraftAsset[];
+  assetsPending?: boolean;
+  assetsError?: string;
+  onAddAssets?: (files: File[]) => void;
+  onDeleteAsset?: (assetId: number) => void;
 }) {
   const latest = draft.versions.at(-1)!;
   const [title, setTitle] = useState(latest.title);
@@ -1853,6 +1933,7 @@ export function SimpleDraftCard({
   const [blogId, setBlogId] = useState(defaultBlogId);
   const [tagsText, setTagsText] = useState(defaultTags || suggestedTags.join(', '));
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [rightsApproved, setRightsApproved] = useState(false);
 
   useEffect(() => {
     const current = draft.versions.at(-1)!;
@@ -1868,7 +1949,8 @@ export function SimpleDraftCard({
 
   const dirty = title !== latest.title || body !== latest.body;
   const validBlogId = /^[A-Za-z0-9_-]+$/.test(blogId);
-  const canPublish = validBlogId && !dirty && !startingPublish;
+  const requiredAssetsReady = draftAssets === undefined || draftAssets.length >= 3;
+  const canPublish = validBlogId && !dirty && body.length >= 3000 && !startingPublish && requiredAssetsReady;
   const imageRows = referenceImages?.items?.slice(0, 5) ?? [];
 
   function confirmPublish() {
@@ -1974,10 +2056,49 @@ export function SimpleDraftCard({
         </div>
       )}
 
+      {draftAssets !== undefined && (
+        <div className="mt-4 rounded-xl border border-sky-200 bg-sky-50/60 p-3" aria-label="네이버 본문 이미지">
+          <div className="flex items-center justify-between gap-2">
+            <div><h3 className="text-xs font-bold">본문 이미지</h3><p className="text-[10px] text-slate-500">최소 3장 · 최대 10장 · 현재 원고 v{latest.version} 전용</p></div>
+            <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${draftAssets.length >= 3 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{draftAssets.length}/3</span>
+          </div>
+          <label className="mt-2 flex items-start gap-2 text-[10px] leading-4 text-slate-600">
+            <input type="checkbox" checked={rightsApproved} onChange={(event) => setRightsApproved(event.target.checked)} />
+            직접 촬영했거나 네이버 블로그 사용 권한이 있는 이미지만 선택합니다.
+          </label>
+          <label className={`mt-2 block rounded-lg border border-dashed px-3 py-2 text-center text-xs font-semibold ${rightsApproved && !assetsPending ? 'cursor-pointer border-sky-400 bg-white text-sky-700' : 'cursor-not-allowed border-slate-300 text-slate-400'}`}>
+            {assetsPending ? '이미지 처리 중…' : '이미지 파일 선택'}
+            <input
+              className="hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              disabled={!rightsApproved || assetsPending || draftAssets.length >= 10}
+              onChange={(event) => {
+                const files = [...(event.currentTarget.files ?? [])];
+                event.currentTarget.value = '';
+                if (files.length) onAddAssets(files);
+              }}
+            />
+          </label>
+          <div className="mt-2 space-y-1">
+            {draftAssets.map((asset) => (
+              <div key={asset.asset_id} className="flex items-center gap-2 rounded bg-white px-2 py-1.5 text-[10px]">
+                <span className="min-w-0 flex-1 truncate">{asset.position + 1}. {asset.filename} · {Math.ceil(asset.byte_size / 1024)}KB</span>
+                <button className="text-rose-600 disabled:text-slate-300" disabled={assetsPending} onClick={() => onDeleteAsset(asset.asset_id)}>삭제</button>
+              </div>
+            ))}
+          </div>
+          {!requiredAssetsReady && <p className="mt-2 text-[10px] font-medium text-amber-700">임시저장을 시작하려면 승인된 이미지가 {3 - draftAssets.length}장 더 필요합니다.</p>}
+          {assetsError && <p className="mt-2 text-[10px] text-rose-700">이미지 오류: {assetsError}</p>}
+        </div>
+      )}
+
       <div className="mt-4 rounded-xl border border-[#dce5e0] bg-[#f6f8f5] p-3">
         <p className="text-[10px] font-semibold tracking-[0.14em] text-emerald-700">STEP 3 · 네이버로 보내기</p>
         <h3 className="mt-1 text-sm font-bold">네이버 임시저장</h3>
         <p className="mt-1 text-[10px] leading-4 text-slate-500">블로그 ID는 한 번 저장하면 다음 글부터 자동으로 사용합니다. 공개 발행은 하지 않습니다.</p>
+        {body.length < 3000 && <p className="mt-2 text-[10px] font-medium text-amber-700">임시저장은 본문 3,000자 이상부터 가능합니다. 현재 {body.length.toLocaleString()}자입니다.</p>}
         <label className="mt-3 block text-[11px] font-semibold" htmlFor="simple-blog-id">네이버 블로그 ID</label>
         <input
           id="simple-blog-id"
@@ -2013,9 +2134,11 @@ export function SimpleDraftCard({
           {startingPublish ? '네이버로 보내는 중…' : '네이버에 임시저장'}
         </button>
         {publishJob && (
-          <p className={`mt-2 rounded-lg px-2 py-2 text-xs ${publishJob.status === 'failed' ? 'bg-rose-50 text-rose-700' : publishJob.status === 'draft_saved' ? 'bg-emerald-100 text-emerald-800' : 'bg-sky-50 text-sky-700'}`}>
-            {publishJob.status === 'draft_saved'
-              ? '네이버 임시저장을 확인했습니다.'
+          <p className={`mt-2 rounded-lg px-2 py-2 text-xs ${publishJob.status === 'failed' ? 'bg-rose-50 text-rose-700' : publishJob.status === 'verified_draft_saved' || publishJob.status === 'draft_saved' ? 'bg-emerald-100 text-emerald-800' : 'bg-sky-50 text-sky-700'}`}>
+            {publishJob.status === 'verified_draft_saved'
+              ? '네이버 임시저장 후 재열기 검증까지 완료했습니다.'
+              : publishJob.status === 'draft_saved'
+                ? '네이버 임시저장을 확인했습니다. (전용 브라우저 방식)'
               : publishJob.status === 'failed'
                 ? `중단됨 · ${PUBLISH_STAGE_LABEL[publishJob.stage] ?? publishJob.stage}`
                 : `진행 중 · ${PUBLISH_STAGE_LABEL[publishJob.stage] ?? publishJob.stage}`}
@@ -2063,7 +2186,7 @@ export function DraftCard({
 
   function confirmPublish() {
     if (!canPublish) return;
-    if (!window.confirm('전용 Chrome의 SmartEditor에 이 최신 버전을 입력하고 임시저장할까요? 공개 발행은 하지 않습니다.')) return;
+    if (!window.confirm('현재 Chrome의 SmartEditor에 이 최신 버전을 입력하고 임시저장할까요? 공개 발행은 하지 않습니다.')) return;
     onPublish(blogId, tagsText.split(',').map((tag) => tag.trim()).filter(Boolean));
   }
 
@@ -2104,14 +2227,14 @@ export function DraftCard({
       </div>
       <div className="mt-3 border-t border-slate-100 pt-3">
         <h3 className="text-xs font-semibold">SmartEditor 임시저장</h3>
-        <p className="mt-0.5 text-[10px] text-slate-400">전용 Chrome·로그인·CDP가 준비된 경우에만 실행됩니다. 공개 발행은 하지 않습니다.</p>
+        <p className="mt-0.5 text-[10px] text-slate-400">현재 Chrome의 네이버 로그인 상태를 사용합니다. 공개 발행은 하지 않습니다.</p>
         <div className="mt-2 flex gap-1">
           <input className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs" value={blogId} onChange={(event) => setBlogId(event.target.value)} placeholder="네이버 blog ID" />
           <input className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-xs" value={tagsText} onChange={(event) => setTagsText(event.target.value)} placeholder="태그1, 태그2" />
         </div>
         {dirty && <p className="mt-1 text-[10px] text-amber-700">수정 내용을 새 버전으로 저장해야 임시저장을 시작할 수 있습니다.</p>}
         <button className="mt-2 w-full rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40" disabled={!canPublish} onClick={confirmPublish}>{startingPublish ? 'Job 시작 중…' : '최신 버전 임시저장 시작'}</button>
-        {publishJob && <p className={`mt-2 rounded px-2 py-1 text-xs ${publishJob.status === 'failed' ? 'bg-rose-50 text-rose-700' : publishJob.status === 'draft_saved' ? 'bg-emerald-50 text-emerald-700' : 'bg-sky-50 text-sky-700'}`}>Job #{publishJob.job_id} · {publishJob.status} · {publishJob.stage || '대기'}</p>}
+        {publishJob && <p className={`mt-2 rounded px-2 py-1 text-xs ${publishJob.status === 'failed' ? 'bg-rose-50 text-rose-700' : publishJob.status === 'verified_draft_saved' || publishJob.status === 'draft_saved' ? 'bg-emerald-50 text-emerald-700' : 'bg-sky-50 text-sky-700'}`}>Job #{publishJob.job_id} · {publishJob.status} · {publishJob.stage || '대기'}</p>}
         {publishError && <p className="mt-1 text-xs text-rose-700">Publisher 오류: {publishError}</p>}
       </div>
     </section>

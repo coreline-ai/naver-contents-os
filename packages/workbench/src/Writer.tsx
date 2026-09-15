@@ -150,7 +150,7 @@ export function Writer({ client, openRequest, onDirtyChange, onSaved, preference
       {mode === 'plan' && createdId && <button onClick={() => void open(createdId)}>저장된 원고 #{createdId} 다시 열기</button>}
       {loadingDraft && <p role="status">선택한 원고를 불러오는 중…</p>}
       {draft ? <DraftEditor key={draft.draft_id} client={client} draft={draft} quality={quality} suggestedTags={tags} preferences={preferences} onPreferences={onPreferences} onDirtyChange={setDirty} disabled={pending || loadingDraft || plannerBusy} onUpdated={next => { setDraft(next); setQuality(null); onSavedRef.current(next.draft_id, true); }}/>
-      : <section className="panel empty-editor"><p className="eyebrow">2 · 원고 편집과 검수</p><h2>작성한 글이 여기에 표시됩니다</h2><p>제목과 본문을 직접 수정하고, 새 버전으로 저장할 수 있습니다.</p><ol><li>주제를 입력하고 완성 글을 만듭니다.</li><li>내용과 출처를 확인하고 수정합니다.</li><li>내 원고에 저장한 뒤 네이버 임시저장을 선택합니다.</li></ol><p className="notice">원고 저장은 이 컴퓨터에, 네이버 임시저장은 별도 로그인 브라우저에 저장합니다. 자동으로 공개하지 않습니다.</p></section>}
+      : <section className="panel empty-editor"><p className="eyebrow">2 · 원고 편집과 검수</p><h2>작성한 글이 여기에 표시됩니다</h2><p>제목과 본문을 직접 수정하고, 새 버전으로 저장할 수 있습니다.</p><ol><li>주제를 입력하고 완성 글을 만듭니다.</li><li>내용과 출처를 확인하고 수정합니다.</li><li>내 원고에 저장한 뒤 네이버 임시저장을 선택합니다.</li></ol><p className="notice">원고 저장은 이 컴퓨터에, 네이버 임시저장은 설치된 확장을 통해 현재 Chrome에 저장합니다. 자동으로 공개하지 않습니다.</p></section>}
     </div>
   </div></>;
 }

@@ -9,14 +9,19 @@ export interface Settings {
   defaultTags: string;
 }
 
-const DEFAULTS: Settings = {
+export const DEFAULT_SETTINGS: Settings = {
   coreUrl: 'http://127.0.0.1:3719',
   token: '',
   allowLlmWhenSensitiveUnknown: true,
   blogId: '',
   defaultTags: '',
 };
-const STORAGE_KEY = 'ncos-settings';
+export const SETTINGS_STORAGE_KEY = 'ncos-settings';
+
+export async function loadSettings(): Promise<Settings> {
+  const stored = await browser.storage.local.get(SETTINGS_STORAGE_KEY);
+  return { ...DEFAULT_SETTINGS, ...(stored[SETTINGS_STORAGE_KEY] ?? {}) };
+}
 
 interface SettingsState extends Settings {
   loaded: boolean;
@@ -25,11 +30,10 @@ interface SettingsState extends Settings {
 }
 
 export const useSettings = create<SettingsState>((set, get) => ({
-  ...DEFAULTS,
+  ...DEFAULT_SETTINGS,
   loaded: false,
   load: async () => {
-    const stored = await browser.storage.local.get(STORAGE_KEY);
-    set({ ...DEFAULTS, ...(stored[STORAGE_KEY] ?? {}), loaded: true });
+    set({ ...(await loadSettings()), loaded: true });
   },
   save: async (patch) => {
     const next = {
@@ -40,7 +44,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       defaultTags: get().defaultTags,
       ...patch,
     };
-    await browser.storage.local.set({ [STORAGE_KEY]: next });
+    await browser.storage.local.set({ [SETTINGS_STORAGE_KEY]: next });
     set(next);
   },
 }));

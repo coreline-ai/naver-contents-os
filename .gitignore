@@ -21,6 +21,8 @@ data/local_core_token.txt
 data/.*.web-auth.sqlite3*
 data/chrome-automation-profile/
 data/publisher-artifacts/
+data/draft-assets/
+data/live-acceptance/
 
 # Playwright / test artifacts
 test-results/

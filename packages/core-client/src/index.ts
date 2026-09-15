@@ -11,6 +11,7 @@ import type {
   CommercialResponse,
   DraftCreateRequest,
   DraftCreateResponse,
+  DraftAsset,
   DraftDetail,
   DraftListResponse,
   DraftUserStatus,
@@ -34,6 +35,8 @@ import type {
   PublishedContent,
   PublishedContentListResponse,
   PublishJob,
+  PublishCommand,
+  PublisherReadiness,
   PreflightResponse,
   ResearchGraphResponse,
   RisingRequest,
@@ -438,7 +441,12 @@ export class CoreClient {
 
   startPublishJob(
     draftId: number,
-    input: { blog_id: string; tags: string[]; expected_version?: number },
+    input: {
+      blog_id: string;
+      tags: string[];
+      expected_version?: number;
+      transport?: 'dedicated_chrome_cdp' | 'current_chrome_extension';
+    },
   ): Promise<PublishJob> {
     return this.request<PublishJob>(`/v1/drafts/${draftId}/publish-jobs`, {
       method: 'POST',
@@ -452,6 +460,78 @@ export class CoreClient {
 
   latestPublishJob(draftId: number): Promise<PublishJob | null> {
     return this.request<PublishJob | null>(`/v1/drafts/${draftId}/publish-jobs/latest`);
+  }
+
+  addDraftAsset(
+    draftId: number,
+    input: {
+      draft_version: number;
+      filename: string;
+      mime_type: 'image/png' | 'image/jpeg' | 'image/webp';
+      data_base64: string;
+      position: number;
+      anchor_after: number;
+      rights_status: 'approved';
+    },
+  ): Promise<DraftAsset> {
+    return this.request<DraftAsset>(`/v1/drafts/${draftId}/assets`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  listDraftAssets(draftId: number, draftVersion: number): Promise<DraftAsset[]> {
+    return this.request<DraftAsset[]>(`/v1/drafts/${draftId}/assets?draft_version=${draftVersion}`);
+  }
+
+  generateDraftGuideAssets(draftId: number, draftVersion: number): Promise<DraftAsset[]> {
+    return this.request<DraftAsset[]>(`/v1/drafts/${draftId}/assets/generate-guide`, {
+      method: 'POST',
+      body: JSON.stringify({ draft_version: draftVersion, count: 3 }),
+    });
+  }
+
+  deleteDraftAsset(draftId: number, assetId: number): Promise<void> {
+    return this.request<void>(`/v1/drafts/${draftId}/assets/${assetId}`, { method: 'DELETE' });
+  }
+
+  getPublishCommand(jobId: number, leaseOwner?: string): Promise<PublishCommand> {
+    const query = leaseOwner ? `?lease_owner=${encodeURIComponent(leaseOwner)}` : '';
+    return this.request<PublishCommand>(`/v1/publish-jobs/${jobId}/command${query}`);
+  }
+
+  nextPublishCommand(leaseOwner: string, blogIds: string[] = []): Promise<PublishCommand | null> {
+    const query = new URLSearchParams({ lease_owner: leaseOwner });
+    for (const blogId of blogIds) query.append('blog_id', blogId);
+    return this.request<PublishCommand | null>(`/v1/publisher/next-command?${query.toString()}`);
+  }
+
+  recordPublishEvent(jobId: number, input: {
+    stage: string;
+    status: 'running' | 'passed' | 'failed';
+    error_code?: string | null;
+    detail?: string;
+    verification?: Record<string, unknown> | null;
+  }): Promise<PublishJob> {
+    return this.request<PublishJob>(`/v1/publish-jobs/${jobId}/events`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  retryPublishJob(jobId: number): Promise<PublishJob> {
+    return this.request<PublishJob>(`/v1/publish-jobs/${jobId}/retry`, { method: 'POST' });
+  }
+
+  publisherReadiness(): Promise<PublisherReadiness> {
+    return this.request<PublisherReadiness>('/v1/publisher/readiness');
+  }
+
+  publisherHeartbeat(input: { extension_id: string; version: string; active_url?: string }): Promise<PublisherReadiness> {
+    return this.request<PublisherReadiness>('/v1/publisher/extension-heartbeat', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 }
 

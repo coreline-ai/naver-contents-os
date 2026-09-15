@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -546,12 +546,99 @@ class SqlJobStore:
     def __init__(self, session_factory: sessionmaker[Session]):
         self._sessions = session_factory
 
-    def create(self, draft_id: int) -> int:
+    def create(
+        self,
+        draft_id: int,
+        *,
+        transport: str = "dedicated_chrome_cdp",
+        draft_version: int = 1,
+        asset_manifest_version: int = 0,
+        idempotency_key: str | None = None,
+        request_payload: dict | None = None,
+    ) -> int:
         with self._sessions() as session:
-            job = PublishJob(draft_id=draft_id, status="pending", history=[])
+            job = PublishJob(
+                draft_id=draft_id,
+                status="pending",
+                history=[],
+                transport=transport,
+                draft_version=draft_version,
+                asset_manifest_version=asset_manifest_version,
+                idempotency_key=idempotency_key,
+                request_payload=request_payload or {},
+                verification={},
+            )
             session.add(job)
             session.commit()
             return job.id
+
+    def by_idempotency_key(self, key: str) -> dict | None:
+        with self._sessions() as session:
+            job_id = session.scalar(select(PublishJob.id).where(PublishJob.idempotency_key == key))
+        return self.get(job_id) if job_id is not None else None
+
+    def restart(self, job_id: int) -> None:
+        with self._sessions() as session:
+            job = session.get(PublishJob, job_id)
+            if job is None:
+                return
+            resume_stage = "reopen_verify" if job.stage == "reopen_verify" else "browser_attach"
+            entry = {
+                "stage": resume_stage,
+                "status": "pending",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "error_code": None,
+                "detail": "same idempotent job restarted",
+            }
+            job.status = "pending"
+            job.stage = resume_stage
+            job.error_code = None
+            job.detail = "waiting to resume saved-draft verification" if resume_stage == "reopen_verify" else "waiting for publisher transport"
+            if resume_stage != "reopen_verify":
+                job.verification = {}
+            job.lease_owner = None
+            job.lease_expires_at = None
+            job.history = [*job.history, entry]
+            session.commit()
+
+    def claim_lease(self, job_id: int, owner: str, *, ttl_seconds: int = 90) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._sessions() as session:
+            job = session.get(PublishJob, job_id)
+            if job is None:
+                return False
+            expires = job.lease_expires_at
+            if expires is not None and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if job.lease_owner and job.lease_owner != owner and expires and expires > now:
+                return False
+            job.lease_owner = owner[:100]
+            job.lease_expires_at = now + timedelta(seconds=ttl_seconds)
+            session.commit()
+            return True
+
+    def next_available(self, transport: str, blog_ids: list[str] | None = None) -> int | None:
+        now = datetime.now(timezone.utc)
+        eligible = {value.strip().casefold() for value in (blog_ids or []) if value.strip()}
+        if blog_ids is not None and not eligible:
+            return None
+        with self._sessions() as session:
+            jobs = session.scalars(
+                select(PublishJob).where(
+                    PublishJob.transport == transport,
+                    PublishJob.status.in_(("pending", "waiting_extension")),
+                ).order_by(PublishJob.id).limit(20)
+            ).all()
+            for job in jobs:
+                requested_blog = str((job.request_payload or {}).get("blog_id") or "").strip().casefold()
+                if eligible and requested_blog not in eligible:
+                    continue
+                expires = job.lease_expires_at
+                if expires is not None and expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if not job.lease_owner or not expires or expires <= now:
+                    return job.id
+        return None
 
     def latest(self, draft_id: int) -> dict | None:
         with self._sessions() as session:
@@ -575,6 +662,14 @@ class SqlJobStore:
             job.history = [*job.history, history_entry]
             session.commit()
 
+    def update_verification(self, job_id: int, verification: dict) -> None:
+        with self._sessions() as session:
+            job = session.get(PublishJob, job_id)
+            if job is None:
+                return
+            job.verification = dict(verification)
+            session.commit()
+
     def get(self, job_id: int) -> dict | None:
         with self._sessions() as session:
             job = session.get(PublishJob, job_id)
@@ -588,4 +683,12 @@ class SqlJobStore:
                 "error_code": job.error_code,
                 "detail": job.detail,
                 "history": list(job.history),
+                "transport": job.transport,
+                "draft_version": job.draft_version,
+                "asset_manifest_version": job.asset_manifest_version,
+                "idempotency_key": job.idempotency_key,
+                "request_payload": dict(job.request_payload),
+                "verification": dict(job.verification),
+                "lease_owner": job.lease_owner,
+                "lease_expires_at": _iso(job.lease_expires_at),
             }

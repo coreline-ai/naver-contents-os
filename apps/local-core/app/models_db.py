@@ -103,8 +103,39 @@ class PublishJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
     detail: Mapped[str] = mapped_column(Text, default="")
     history: Mapped[list] = mapped_column(JSON, default=list)
+    transport: Mapped[str] = mapped_column(String(32), default="dedicated_chrome_cdp")
+    draft_version: Mapped[int] = mapped_column(Integer, default=1)
+    asset_manifest_version: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    request_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    verification: Mapped[dict] = mapped_column(JSON, default=dict)
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class DraftAsset(Base):
+    """A local, user-approved image fixed to one immutable Draft version."""
+
+    __tablename__ = "draft_assets"
+    __table_args__ = (
+        UniqueConstraint("draft_id", "draft_version", "position", name="uq_draft_assets_position"),
+        UniqueConstraint("draft_id", "draft_version", "sha256", name="uq_draft_assets_sha256"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[int] = mapped_column(ForeignKey("drafts.id", ondelete="CASCADE"), index=True)
+    draft_version: Mapped[int] = mapped_column(Integer)
+    filename: Mapped[str] = mapped_column(String(255))
+    local_path: Mapped[str] = mapped_column(Text)
+    mime_type: Mapped[str] = mapped_column(String(40))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    position: Mapped[int] = mapped_column(Integer)
+    anchor_after: Mapped[int] = mapped_column(Integer, default=0)
+    rights_status: Mapped[str] = mapped_column(String(20), default="approved")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class ApiCache(Base):
