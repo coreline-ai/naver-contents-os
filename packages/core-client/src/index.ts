@@ -507,6 +507,8 @@ export class CoreClient {
   }
 
   recordPublishEvent(jobId: number, input: {
+    attempt_id: string;
+    lease_owner: string;
     stage: string;
     status: 'running' | 'passed' | 'failed';
     error_code?: string | null;

@@ -30,13 +30,9 @@ export const EDITOR_SELECTORS = {
     '.se-popup-button-cancel',
     'button[data-name="close"]',
   ],
-  publishOpen: [
-    'button.publish_btn__WEpYf',
-    'button[class^="publish_btn__"]',
-    'button[class*=" publish_btn__"]',
-    'button[data-click-area="tpb.publish"]',
-  ],
+  publishOpen: ['button[data-click-area="tpb.publish"]'],
   tagInput: ['#tag-input', 'input.tag_input', '.tag_area input'],
+  tagChip: ['.tag_area .tag', '.tag_area [class*="tag_item"]', '[class*="tag_list"] [class*="tag_item"]', '[data-tag]'],
   draftSave: [
     'button.save_btn__bzc5B',
     'button[class^="save_btn__"]',
@@ -59,8 +55,11 @@ export class SmartEditorError extends Error {
 function visible(element: Element): element is HTMLElement {
   const view = element.ownerDocument.defaultView;
   if (!view || !(element instanceof view.HTMLElement)) return false;
-  const style = view.getComputedStyle(element);
-  return style.display !== 'none' && style.visibility !== 'hidden' && !element.hasAttribute('disabled');
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    const style = view.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+  }
+  return !element.hasAttribute('disabled');
 }
 
 export function editorDocuments(root: Document): Document[] {
@@ -181,8 +180,9 @@ function pressEnter(element: HTMLElement): void {
 
 export async function inputTags(root: Document, tags: string[]): Promise<void> {
   if (tags.length === 0) return;
-  const open = findEditorElement(root, EDITOR_SELECTORS.publishOpen)
-    ?? findButtonByText(root, /^발행$/);
+  const alreadyOpen = findEditorElement(root, EDITOR_SELECTORS.tagInput);
+  if (alreadyOpen) throw new SmartEditorError('input_tags', 'publish_layer_already_open', '발행 화면이 이미 열려 있어 버튼을 누르지 않고 중단했습니다.');
+  const open = findEditorElement(root, EDITOR_SELECTORS.publishOpen);
   if (!open) throw new SmartEditorError('input_tags', 'publish_layer_not_found', '태그 입력 화면을 여는 버튼을 찾지 못했습니다.');
   open.click();
   const input = await waitFor(
@@ -193,6 +193,10 @@ export async function inputTags(root: Document, tags: string[]): Promise<void> {
   for (const tag of tags.slice(0, 10)) {
     replaceEditorText(input, tag.replace(/\s+/g, ''));
     pressEnter(input);
+  }
+  if (JSON.stringify(readEditorTags(root)) !== JSON.stringify(normalizedTags(tags))) {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    throw new SmartEditorError('input_tags', 'tag_readback_mismatch', '태그가 실제 등록되지 않았습니다.');
   }
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
 }
@@ -226,15 +230,38 @@ async function fetchAsset(
   return new File([bytes], asset.filename, { type: asset.mime_type });
 }
 
+export function normalizeRemoteImageUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || !/^(?:blogfiles|postfiles)\.pstatic\.net$/i.test(url.hostname)
+      || url.username || url.password || (url.port && url.port !== '443')) return null;
+    url.search = ''; url.hash = '';
+    return url.href;
+  } catch { return null; }
+}
+
+export function normalizedTags(tags: string[]): string[] {
+  return [...new Set(tags.map(tag => tag.replace(/^#/, '').replace(/\s+/g, '')).filter(Boolean))].sort();
+}
+
+export function readEditorTags(root: Document): string[] {
+  const values = editorDocuments(root).flatMap(doc => [...new Set(EDITOR_SELECTORS.tagChip.flatMap(s => [...doc.querySelectorAll(s)]))])
+    .filter(visible).map(element => {
+      if (element.hasAttribute('data-tag')) return element.getAttribute('data-tag') || '';
+      const clone = element.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('button, [role="button"]').forEach(button => button.remove());
+      return clone.textContent || '';
+    });
+  return normalizedTags(values);
+}
+
 export function remoteImageSources(root: Document): string[] {
-  const sources: string[] = [];
-  for (const doc of editorDocuments(root)) {
-    for (const image of doc.querySelectorAll<HTMLImageElement>('img[src]')) {
-      const source = image.currentSrc || image.src || image.getAttribute('src') || '';
-      if (/^https:\/\/(?:blogfiles|postfiles)\.pstatic\.net\//i.test(source)) sources.push(source);
-    }
-  }
-  return [...new Set(sources)];
+  const container = bodyContainer(root);
+  if (!container) return [];
+  return [...new Set([...container.querySelectorAll<HTMLImageElement>('img[src]')]
+    .filter(image => image.complete && image.naturalWidth > 0)
+    .map(image => normalizeRemoteImageUrl(image.currentSrc || image.src || image.getAttribute('src') || ''))
+    .filter((value): value is string => value !== null))];
 }
 
 function assignFiles(input: HTMLInputElement, files: File[]): void {
@@ -247,16 +274,17 @@ function assignFiles(input: HTMLInputElement, files: File[]): void {
 
 function placeImageCaret(root: Document, anchorAfter: number): void {
   const container = bodyContainer(root);
-  if (!container) return;
-  const paragraphs = [...container.querySelectorAll<HTMLElement>('.se-text-paragraph, p, [contenteditable="true"]')];
-  const target = paragraphs[Math.min(Math.max(anchorAfter - 1, 0), Math.max(paragraphs.length - 1, 0))] ?? container;
+  const paragraphs = container ? [...container.querySelectorAll<HTMLElement>('.se-text-paragraph, p')].filter(p => !p.closest('.se-documentTitle, .se-section-image') && !p.querySelector('.se-placeholder') && normalizedContent(editorText(p))) : [];
+  const target = paragraphs[Math.max(anchorAfter - 1, 0)];
+  if (!target || !Number.isInteger(anchorAfter) || anchorAfter < 0 || anchorAfter > paragraphs.length) throw new SmartEditorError('upload_images', 'image_anchor_not_found', '전체 본문에서 이미지 위치를 찾지 못했습니다.');
   target.focus();
   const range = target.ownerDocument.createRange();
   range.selectNodeContents(target);
-  range.collapse(false);
+  range.collapse(anchorAfter === 0);
   const selection = target.ownerDocument.getSelection();
   selection?.removeAllRanges();
   selection?.addRange(range);
+  if (!selection?.rangeCount || !target.contains(selection.anchorNode)) throw new SmartEditorError('upload_images', 'image_caret_unconfirmed', '이미지 커서를 확인하지 못했습니다.');
 }
 
 export async function uploadImages(
@@ -303,16 +331,19 @@ export async function saveDraft(root: Document): Promise<void> {
   const button = findEditorElement(root, EDITOR_SELECTORS.draftSave)
     ?? findButtonByText(root, /^임시\s*저장(?:\s*\d+)?$/);
   if (!button) throw new SmartEditorError('draft_save', 'draft_save_not_found', '임시저장 버튼을 찾지 못했습니다.');
-  const before = button.textContent;
+  const before = findEditorElement(root, EDITOR_SELECTORS.saveSuccess);
+  const beforeText = before?.textContent;
   button.click();
   await waitFor(() => {
     const success = findEditorElement(root, EDITOR_SELECTORS.saveSuccess);
-    const changed = button.textContent !== before;
-    return success || changed ? true : null;
-  }, 8_000).catch(() => true);
+    return success && (success !== before || success.textContent !== beforeText) && /저장.*완료|완료.*저장/.test(success.textContent || '') ? true : null;
+  }, 8_000).catch(() => {
+    throw new SmartEditorError('draft_save', 'draft_save_unconfirmed', '저장 완료 신호가 없어 저장 여부를 확인하지 못했습니다.');
+  });
 }
 
 export function validateCommand(command: PublishCommand): void {
+  if (command.tags.length > 10) throw new SmartEditorError('prepare_editor', 'too_many_tags', '태그는 최대 10개입니다.');
   if (!command.title.trim()) throw new SmartEditorError('prepare_editor', 'empty_title', '제목이 비어 있습니다.');
   if (command.body_chars < 3000 || command.body.trim().length < 3000) {
     throw new SmartEditorError('prepare_editor', 'body_too_short', '본문은 3,000자 이상이어야 합니다.');
@@ -371,15 +402,21 @@ export async function readEditorVerification(
   });
   const title = editorText(findEditorElement(root, EDITOR_SELECTORS.title));
   const container = bodyContainer(root);
-  const body = editorText(container);
+  const body = container ? [...container.querySelectorAll<HTMLElement>('.se-text-paragraph,p')].filter(p => !p.closest('.se-documentTitle, .se-section-image')).map(p => editorText(p)).join('\n') : '';
+  const actualTags = readEditorTags(root);
+  if (JSON.stringify(actualTags) !== JSON.stringify(normalizedTags(command.tags))) throw new SmartEditorError('reopen_verify', 'tags_mismatch', '저장된 태그가 요청과 다릅니다.');
+  const sources = remoteImageSources(root);
+  const receipts = command.image_receipts ?? [];
+  if (receipts.length !== command.assets.length || sources.length !== receipts.length || receipts.some(receipt => !sources.includes(normalizeRemoteImageUrl(receipt.remote_url) || ''))) {
+    throw new SmartEditorError('reopen_verify', 'image_receipts_mismatch', '저장된 이미지 원본을 확인하지 못했습니다.');
+  }
   const allImages = container?.querySelectorAll('img[src]').length ?? 0;
-  const remoteImages = remoteImageSources(root).filter((source) => {
-    if (!container) return true;
-    return [...container.querySelectorAll<HTMLImageElement>('img[src]')]
-      .some((image) => (image.currentSrc || image.src || image.getAttribute('src') || '') === source);
-  }).length;
+  const remoteImages = sources.length;
   const [titleDigest, bodyDigest] = await Promise.all([contentHash(title), contentHash(body)]);
   return {
+    actual_tags: actualTags,
+    image_receipts: receipts,
+    asset_manifest_hash: command.asset_manifest_hash,
     title_hash_match: titleDigest === command.title_hash,
     body_hash_match: bodyDigest === command.body_hash,
     expected_title_hash: command.title_hash,

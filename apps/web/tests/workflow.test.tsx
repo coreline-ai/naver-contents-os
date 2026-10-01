@@ -2,9 +2,9 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
-import { TodayWork, DraftLibrary, ImprovementQueue, buildImprovementInput } from '@ncos/workbench';
+import { TodayWork, DraftLibrary, DraftEditor, PerformanceWorkspace, ImprovementQueue, buildImprovementInput } from '@ncos/workbench';
 import type { CoreClient } from '@ncos/core-client';
-import type { PerformanceRecommendation, TodayWorkItem } from '@ncos/contracts';
+import type { DraftDetail, PerformanceRecommendation, TodayWorkItem } from '@ncos/contracts';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, host: HTMLDivElement, query: QueryClient;
 const recommendation = { id: 31, keyword: '후쿠오카 교통패스', published_keyword: '후쿠오카 여행', published_title: '기존 여행 원고', draft_id: 7, published_url: 'https://blog.naver.com/test/123', action: 'create_followup', reason: '실적 기준 추천', confidence: 'medium', calculation_version: 'fixture', period: { start: '2026-08-01', end: '2026-08-31' }, created_at: '2026-09-06T10:00:00Z' } as PerformanceRecommendation;
@@ -56,4 +56,46 @@ it('opens ad-specific work in the ad tab even when its action is open_performanc
   const client={todayWork:vi.fn().mockResolvedValue({items:[{id:'ad:1',source_type:'ad_performance',action:'open_performance',title:'광고 공백',keyword:'여행'}]})};
   await render(<TodayWork client={client as unknown as CoreClient} onOpenDraft={vi.fn()} onAnalyze={vi.fn()} onPerformance={general} onAdPerformance={ad} onPublications={vi.fn()}/>);
   await click('성과 개선 보기');expect(ad).toHaveBeenCalledOnce();expect(general).not.toHaveBeenCalled();
+});
+
+
+const publicationDraft = { draft_id: 7, keyword: '검수 주제', provider: 'test', fact_pack_id: null, versions: [{ version: 1, title: '등록 검수 원고', body: '검수 본문'.repeat(700), created_at: '2026-10-01T00:00:00Z' }] } as DraftDetail;
+function publicationClient() {
+  return { latestPublishJob: vi.fn().mockResolvedValue(null), listDraftAssets: vi.fn().mockResolvedValue([]), publisherReadiness: vi.fn().mockResolvedValue({ current_chrome_extension: { ready: false } }), createPublishedContent: vi.fn().mockResolvedValue({ id: 71 }), getPublishJob: vi.fn() };
+}
+async function preparePublication() {
+  await act(async () => {
+    const url = host.querySelector('#public-url') as HTMLInputElement, date = host.querySelector('#public-date') as HTMLInputElement;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(url, 'https://blog.naver.com/test_blog/123'); url.dispatchEvent(new Event('input', { bubbles: true }));
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(date, '2026-10-01T12:30'); date.dispatchEvent(new Event('input', { bubbles: true }));
+    [...host.querySelectorAll('label')].find(label => label.textContent?.includes('실제로 공개된 것을'))!.querySelector('input')!.click();
+  });
+}
+function publicationEditor(client: ReturnType<typeof publicationClient>) {
+  return <DraftEditor client={client as unknown as CoreClient} draft={publicationDraft} quality={null} suggestedTags={[]} preferences={{ blogId: 'test_blog', tags: '', allowSensitiveUnknown: true }} onPreferences={vi.fn()} onDirtyChange={vi.fn()} onUpdated={vi.fn()} disabled={false}/>;
+}
+it('invalidates publication, performance, today and improvement caches after recording actual publication', async () => {
+  const keys = [['web-publications', 'travel'], ['web-drafts', '', 'editing'], ['web-performance', 'publications'], ['web-performance', 'overview', 1, 2], ['web-performance', 'recommendations', 1, 'open'], ['workbench-today'], ['workbench-improvements']];
+  keys.forEach(key => query.setQueryData(key, { items: [] })); query.setQueryData(['web-watchlist'], { items: [] });
+  const client = publicationClient(); await render(publicationEditor(client)); await preparePublication(); await click('공개 완료 사실 등록');
+  expect(client.createPublishedContent).toHaveBeenCalledWith({ draft_id: 7, title: '등록 검수 원고', canonical_url: 'https://blog.naver.com/test_blog/123', published_at: '2026-10-01T03:30:00.000Z', confirmed: true });
+  keys.forEach(key => expect(query.getQueryState(key)?.isInvalidated).toBe(true));
+  expect(query.getQueryState(['web-watchlist'])?.isInvalidated).toBe(false);
+  expect(host.textContent).toContain('공개 완료 사실을 로컬 발행 기록에 등록했습니다');
+});
+it('refreshes the already-mounted performance publication list without a manual refresh', async () => {
+  let registered = false;
+  const client = { ...publicationClient(), listPerformanceChannels: vi.fn().mockResolvedValue({ items: [] }), listPerformanceImports: vi.fn().mockResolvedValue({ items: [] }), listPublishedContents: vi.fn().mockImplementation(async () => ({ items: registered ? [{ id: 71, title: '등록된 원고' }] : [] })), createPublishedContent: vi.fn().mockImplementation(async () => { registered = true; return { id: 71 }; }) };
+  await render(<><PerformanceWorkspace client={client as unknown as CoreClient} onImprove={vi.fn()} onAnalyze={vi.fn()}/>{publicationEditor(client)}</>);
+  expect(query.getQueryData(['web-performance', 'publications'])).toEqual({ items: [] });
+  await preparePublication(); await click('공개 완료 사실 등록');
+  expect(query.getQueryData(['web-performance', 'publications'])).toEqual({ items: [{ id: 71, title: '등록된 원고' }] });
+  expect(client.listPublishedContents).toHaveBeenCalledTimes(2);
+});
+it('does not invalidate workflow caches after a rejected publication registration', async () => {
+  const client = publicationClient(); client.createPublishedContent.mockRejectedValue(new Error('등록 거부'));
+  const keys = [['web-publications', ''], ['web-performance', 'publications'], ['workbench-today']]; keys.forEach(key => query.setQueryData(key, { items: [] }));
+  await render(publicationEditor(client)); await preparePublication(); await click('공개 완료 사실 등록');
+  keys.forEach(key => expect(query.getQueryState(key)?.isInvalidated).toBe(false));
+  expect(host.textContent).toContain('등록 거부');
 });

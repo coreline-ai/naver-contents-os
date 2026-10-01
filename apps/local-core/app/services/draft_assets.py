@@ -5,18 +5,19 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import os
 import re
 import struct
 import zlib
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import DATA_DIR
-from app.models_db import Draft, DraftAsset, DraftVersion
+from app.models_db import Draft, DraftAsset, DraftVersion, PublishJob
 
 MAX_ASSET_BYTES = 12 * 1024 * 1024
 MAX_ASSETS_PER_VERSION = 10
@@ -146,6 +147,26 @@ def _view(asset: DraftAsset) -> dict:
     }
 
 
+MANIFEST_FIELDS = ("asset_id", "sha256", "position", "anchor_after", "rights_status", "byte_size", "mime_type", "filename")
+
+
+def asset_snapshot(assets: list[dict]) -> list[dict]:
+    return [{key: asset[key] for key in MANIFEST_FIELDS} for asset in assets]
+
+
+def asset_manifest_hash(snapshot: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _require_mutable(session: Session, draft_id: int, draft_version: int) -> None:
+    active = session.scalar(select(PublishJob.id).where(
+        PublishJob.draft_id == draft_id, PublishJob.draft_version == draft_version,
+        PublishJob.status.in_(("pending", "waiting_extension", "running")),
+    ))
+    if active is not None:
+        raise ValueError("image assets are locked by an active publish job")
+
+
 class DraftAssetService:
     def __init__(self, session_factory: sessionmaker[Session], root: Path = ASSET_ROOT):
         self._sessions = session_factory
@@ -191,6 +212,8 @@ class DraftAssetService:
         target = target_dir / f"{digest}{suffix}"
 
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            _require_mutable(session, draft_id, draft_version)
             if session.get(Draft, draft_id) is None:
                 raise ValueError("draft not found")
             version_exists = session.scalar(
@@ -287,13 +310,10 @@ class DraftAssetService:
         return self.list(draft_id, draft_version)
 
     def manifest_version(self, draft_id: int, draft_version: int) -> int:
-        with self._sessions() as session:
-            return int(session.scalar(
-                select(func.max(DraftAsset.id)).where(
-                    DraftAsset.draft_id == draft_id,
-                    DraftAsset.draft_version == draft_version,
-                )
-            ) or 0)
+        # Retain the integer contract, but detect deletion/reordering as well
+        # as additions. The full hash/snapshot is authoritative for jobs.
+        digest = asset_manifest_hash(asset_snapshot(self.list(draft_id, draft_version)))
+        return int(digest[:7], 16)
 
     def get_row(self, asset_id: int) -> DraftAsset | None:
         with self._sessions() as session:
@@ -303,15 +323,37 @@ class DraftAssetService:
             session.expunge(row)
             return row
 
+    def verify_file(self, asset_id: int) -> DraftAsset:
+        row = self.get_row(asset_id)
+        if row is None:
+            raise ValueError("pinned image file is unavailable")
+        path = Path(row.local_path)
+        try:
+            if path.is_symlink() or not path.resolve().is_relative_to(self._root.resolve()):
+                raise ValueError("pinned image file is outside the asset store")
+            data = path.read_bytes()
+        except OSError as exc:
+            raise ValueError("pinned image file is unavailable") from exc
+        if len(data) != row.byte_size or hashlib.sha256(data).hexdigest() != row.sha256:
+            raise ValueError("pinned image file integrity check failed")
+        return row
+
     def delete(self, draft_id: int, asset_id: int) -> bool:
         path: Path | None = None
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             row = session.get(DraftAsset, asset_id)
             if row is None or row.draft_id != draft_id:
                 return False
+            _require_mutable(session, draft_id, row.draft_version)
             path = Path(row.local_path)
+            # Keep file removal under the same writer lock: a concurrent
+            # re-add of this content-addressed blob must not be unlinked.
+            if path.is_relative_to(self._root):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise ValueError("image file removal failed") from exc
             session.delete(row)
             session.commit()
-        if path is not None and path.is_relative_to(self._root):
-            path.unlink(missing_ok=True)
         return True

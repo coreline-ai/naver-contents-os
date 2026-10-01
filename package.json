@@ -10,6 +10,7 @@
     "build:ext": "pnpm --filter extension build",
     "test:ext": "pnpm --filter extension test",
     "test:performance": "bash scripts/test_performance_without_chrome.sh",
+    "test:publisher": "bash scripts/test_publisher_without_chrome.sh",
     "typecheck": "pnpm --filter extension typecheck",
     "verify": "./scripts/verify_all.sh",
     "build:web": "pnpm --filter web build",

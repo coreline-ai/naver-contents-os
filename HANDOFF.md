@@ -1,13 +1,29 @@
 # HANDOFF — Naver Content OS
 
-- 갱신 시각: `2026-09-06 23:30 KST`
+- 갱신 시각: `2026-10-01 21:58 KST`
 - 저장소: `coreline-ai/naver-contents-os`
-- 브랜치/기준 커밋: `main` / `b8d461e`
-- 진행 개발 계획: [기능 보존형 웹앱·사용성 개선](dev-plan/implement_20260906_194855.md) — P0·P1·P2-A·P2-B 자동 검증 완료, P2-C·P3 잔여
-- 직전 검토 계획: `dev-plan/implement_20260906_190353.md`
-- 최신 검토: `docs/20_full_function_review_20260906.md`
-- 상태: **Codex 고품질 작성 경로와 Advisor 내 성과 P0~P3 구현·자동 검증 완료, 실제 계정 표 형식·430px Chrome UAT 대기**
+- 브랜치/기준 커밋: `main` / `4c61c77` + 아래 미커밋 안정화 변경
+- 진행 개발 계획: [안정화 및 잔여 개발](dev-plan/implement_20261001_214011.md) — Phase 1 완료, Phase 2 격리 회귀 완료/실계정 대기, Phase 3~5 잔여
+- 직전 계획: `dev-plan/implement_20260914_222104.md`(당시 작성 상태로 보존, 현재 완료 판정은 새 계획 참조)
+- 검토 기준: 2026-10-01 4개 전문가 감사 및 아래 회귀 결과
+- 상태: **안전 실행 코드·자동 검증 완료. 실제 Chrome 반영/네이버 1회 저장 인수는 미실행**
 - Git: 커밋·푸시하지 않은 dirty working tree
+
+## 2026-10-01 안정화 변경 — 현재 재개 지점
+
+- Backend: SQLite 원자적 lease 점유/회차, 이전 실행 이벤트 거부, 허용 전이, 동시 history 보존, 중복 요청 복구, 300초 lease 만료 회수. 만료 후 자동 writer 재시작 금지.
+- Asset: job 생성 시 불변 목록/hash 고정, 실행 중 변경 차단, 파일 크기/hash 검증. 업로드 receipts와 재열기 원격 URL·태그·본문 hash가 일치해야 `verified_draft_saved`.
+- Extension: polling에도 `resume_stage` 보존, 저장 ACK 불확실/재열기 실패는 재입력 없이 검증만 재개. 기존 글/이미지/열린 발행 확인 화면 보호. 실제 입력 caret/readback·문단 anchor 0/뒤쪽·검증한 bytes 전달·새 저장 신호 확인. 태그용 toolbar 외 일반 발행 클래스 선택자를 제거.
+- 기존 콘텐츠 스크립트 publisher 메시지는 같은 background 안전 실행기로 연결. 페이지 수집/파서는 유지. 직접 DOM 입력을 별도 strict 성공 경로로 취급하지 않음.
+- UI: 요청/진행/불확실 작업 중 편집/이미지 변경 잠금, mutation 중 저장 요청 차단, 응답 역전/성과 캐시 갱신 수정. 기본 목표 3,500자, 실제 저장 기준 3,000자, 짧은 로컬 원고 선택 유지. 구형 `draft_saved`는 재열기 미검증으로 표시.
+- 실행기: provider/endpoint/model 등 유효 설정 변경을 runtime 지문에 반영. 비밀값 자체는 지문에 넣지 않으므로 키 교체는 수동 정상 재시작 필요.
+- **최종 `pnpm verify`: 605건 PASS**(Python 344 / 확장 115 / 웹 146), live smoke 4건 제외, 경고 1개. 양쪽 타입/빌드, compileall, 빈 DB migration head `c7a4e91d2f60`, 구조 parity/diff/추적 민감 파일 검사 PASS. 새 migration 없음.
+- **`pnpm test:publisher`: 123건 PASS**(Python 계약/동시성 26 / mock debugger·background 40 / 작성 UI 57). 실제 Chrome 전체 앱 E2E나 계정 인수 증명은 아님. 운영 DB/provider/네이버 계정 실행 없음.
+- 운영 이력 읽기 전용 확인: 실패 7 / 구형 저장 1 / 엄격한 검증 저장 0. 기존 job8의 실제 원인은 이번 합성 회귀만으로 확정하지 않음.
+- 구형 snapshot 없는 작업은 자동 재시도 거부. 기존 임시글을 먼저 보존하고 원고를 새 버전으로 저장해야 함. 과거 성공 이력·본문·계정 데이터를 임의 수정하지 않음.
+- 빌드 경로: `apps/extension/dist/chrome-mv3`, `apps/web/dist`. **빌드 성공은 현재 Chrome에 새 코드가 적용됐다는 뜻이 아님.** 실제 반영/로그인·편집기 확인 후 앱 단독 임시저장 인수가 다음 작업.
+- 이후: 단일 승인 작성 흐름·이미지 preview/배치/승인, 현재 페이지 수집 웹 연결, 범분야 인기어 데이터원/권한, 정식 격리 demo, 접근성/Advisor 실계정 인수. 이전 기능 제거 없음.
+- 과거 아래 PID/검수 기록은 당시 이력이며 현재 실행 서버 증거가 아님.
 
 ## 2026-09-07 main 반영 전 검증
 

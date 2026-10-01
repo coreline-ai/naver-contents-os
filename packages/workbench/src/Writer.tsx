@@ -24,7 +24,7 @@ export function Writer({ client, openRequest, onDirtyChange, onSaved, preference
   const [keyword, setKeyword] = useState('');
   const [notes, setNotes] = useState('');
   const [style, setStyle] = useState<BlogComposeStyle>('auto');
-  const [length, setLength] = useState(2500);
+  const [length, setLength] = useState(3500);
   const [draft, setDraft] = useState<DraftDetail | null>(null);
   const [quality, setQuality] = useState<ArticleQuality | null>(null);
   const [tags, setTags] = useState<string[]>([]);
@@ -133,8 +133,9 @@ export function Writer({ client, openRequest, onDirtyChange, onSaved, preference
         <fieldset disabled={pending || loadingDraft || plannerBusy}>
           <label htmlFor="topic">글 주제</label><input id="topic" value={keyword} onChange={e => { if (improvement && e.target.value !== improvement.keyword) { setImprovement(null); setNotes(''); } setKeyword(e.target.value); }} placeholder="예: 후쿠오카 여행 준비" maxLength={100}/>
           <label htmlFor="notes">꼭 넣을 내용 <span className="muted">선택</span></label><textarea id="notes" value={notes} onChange={e => setNotes(e.target.value)} placeholder="직접 경험한 내용, 확인한 장소·일정 등을 적어주세요." maxLength={2000} rows={5}/>
-          <div className="form-grid"><div><label htmlFor="style">글 스타일</label><select id="style" value={style} onChange={e => setStyle(e.target.value as BlogComposeStyle)}><option value="auto">자동 선택</option><option value="informational">정보형</option><option value="review">후기형</option><option value="product">구매가이드</option></select></div><div><label htmlFor="length">목표 분량</label><select id="length" value={length} onChange={e => setLength(Number(e.target.value))}><option value={2500}>약 2,500자</option><option value={4000}>약 4,000자</option></select></div></div>
+          <div className="form-grid"><div><label htmlFor="style">글 스타일</label><select id="style" value={style} onChange={e => setStyle(e.target.value as BlogComposeStyle)}><option value="auto">자동 선택</option><option value="informational">정보형</option><option value="review">후기형</option><option value="product">구매가이드</option></select></div><div><label htmlFor="length">목표 분량</label><select id="length" value={length} onChange={e => setLength(Number(e.target.value))}><option value={2500}>약 2,500자 · 짧은 로컬 원고</option><option value={3000}>약 3,000자</option><option value={3500}>약 3,500자 · 권장</option><option value={4000}>약 4,000자</option></select></div></div>
         </fieldset>
+        <p className="notice">네이버 임시저장은 실제 본문 3,000자 이상이 필요합니다. 기본 목표는 여유를 둔 3,500자이며, 생성 후 분량을 다시 확인합니다.</p>
         <button className="primary full-width" disabled={!keyword.trim() || !llm.data?.ready || pending || loadingDraft || plannerBusy}>{pending ? '작성·검사 처리 중…' : '완성 글 만들기'}</button>
       </form>
       {onFindKeywords && <button type="button" className="text-button" onClick={onFindKeywords}>키워드 추천 보기</button>}

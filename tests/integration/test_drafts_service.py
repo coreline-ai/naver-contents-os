@@ -494,7 +494,10 @@ def test_draft_assets_are_version_pinned_and_require_approval(sessions, tmp_path
     assert asset["draft_version"] == 1
     assert asset["sha256"]
     assert service.list(created["draft_id"], 1) == [asset]
-    assert service.manifest_version(created["draft_id"], 1) == asset["asset_id"]
+    assert isinstance(service.manifest_version(created["draft_id"], 1), int)
+    original_manifest = service.manifest_version(created["draft_id"], 1)
+    assert service.delete(created["draft_id"], asset["asset_id"])
+    assert service.manifest_version(created["draft_id"], 1) != original_manifest
     with pytest.raises(ValueError, match="rights approval"):
         service.add(
             created["draft_id"], draft_version=1, filename="미승인.png",
@@ -524,6 +527,26 @@ def test_app_generates_three_valid_original_guide_images_idempotently(sessions, 
         assert len(data) > 1_000
 
 
+def _publish_receipts(command):
+    return [{"asset_id": row["asset_id"], "sha256": row["sha256"],
+             "remote_url": f"https://postfiles.pstatic.net/test/{row['sha256']}.png"}
+            for row in command["assets"]]
+
+
+def _publish_verification(command):
+    return {"actual_title_hash": command["title_hash"], "actual_body_hash": command["body_hash"],
+            "body_chars": command["body_chars"], "image_count": len(command["assets"]),
+            "remote_image_count": len(command["assets"]), "actual_tags": command["tags"],
+            "asset_manifest_hash": command["asset_manifest_hash"], "image_receipts": _publish_receipts(command)}
+
+
+def _publish_saved_checkpoint(record, command):
+    for stage in ("browser_attach", "health_check", "prepare_editor", "input_title", "input_body", "upload_images", "input_tags", "draft_save"):
+        values = {"image_receipts": _publish_receipts(command)} if stage == "upload_images" else None
+        result = record(stage=stage, status="passed", verification=values)
+        assert result["status"] == "running"
+
+
 def test_extension_publish_job_is_idempotent_and_requires_reopen_verification(sessions, tmp_path):
     created = DraftService(sessions, None).create_draft("앱 단독 저장", PLAN_ITEM)
     DraftService(sessions, None).add_version(
@@ -537,7 +560,7 @@ def test_extension_publish_job_is_idempotent_and_requires_reopen_verification(se
             mime_type="image/png", data_base64=base64.b64encode(data).decode(),
             position=position, anchor_after=position * 2, rights_status="approved",
         )
-    service = PublishService(sessions)
+    service = PublishService(sessions, asset_service=assets)
     first = service.prepare(
         created["draft_id"], blog_id="target_blog", tags=["정리"], cdp_url="",
         expected_version=2, transport="current_chrome_extension",
@@ -550,25 +573,29 @@ def test_extension_publish_job_is_idempotent_and_requires_reopen_verification(se
     assert first.job_id == second.job_id
     assert second.reused is True
     service.mark_waiting_extension(first)
-    command = service.command(first.job_id)
+    command = service.command(first.job_id, lease_owner="test-worker")
     assert command is not None
     assert command["draft_version"] == 2
     assert command["body_chars"] >= 3000
     assert len(command["assets"]) == 3
 
-    failed = service.record_extension_event(
-        first.job_id, stage="reopen_verify", status="passed",
-        verification={"actual_title_hash": command["title_hash"], "actual_body_hash": command["body_hash"], "body_chars": 3200,
-                      "image_count": 2, "remote_image_count": 2},
-    )
+    identity = {"attempt_id": command["attempt_id"], "lease_owner": command["lease_owner"]}
+    _publish_saved_checkpoint(lambda **kw: service.record_extension_event(first.job_id, **identity, **kw), command)
+    values = _publish_verification(command)
+    values.update(image_count=2, remote_image_count=2)
+    failed = service.record_extension_event(first.job_id, stage="reopen_verify", status="passed", **identity, verification=values)
     assert failed["status"] == "failed"
     assert failed["error_code"] == "verification_failed"
     restarted = service.retry(first.job_id)
     assert restarted["job_id"] == first.job_id
+    service.mark_waiting_extension(first)
+    command = service.next_extension_command("next-worker", blog_ids=["target_blog"])
+    assert command["resume_stage"] == "reopen_verify"
+    assert command["image_receipts"]
     passed = service.record_extension_event(
         first.job_id, stage="reopen_verify", status="passed",
-        verification={"actual_title_hash": command["title_hash"], "actual_body_hash": command["body_hash"], "body_chars": 3200,
-                      "image_count": 3, "remote_image_count": 3},
+        attempt_id=command["attempt_id"], lease_owner=command["lease_owner"],
+        verification=_publish_verification(command),
     )
     assert passed["status"] == "verified_draft_saved"
     assert passed["verification"]["image_count"] == 3
@@ -1033,40 +1060,30 @@ def test_extension_publish_api_upload_command_retry_and_verified_completion(draf
     assert downloaded.status_code == 200
     assert downloaded.headers["content-type"].startswith("image/png")
 
-    failed = client.post(
-        f"/v1/publish-jobs/{job_id}/events",
-        json={
-            "stage": "reopen_verify",
-            "status": "passed",
-            "verification": {
-                "actual_title_hash": command.json()["title_hash"],
-                "actual_body_hash": command.json()["body_hash"],
-                "body_chars": command.json()["body_chars"],
-                "image_count": 2,
-                "remote_image_count": 2,
-            },
-        },
-        headers=_headers(token),
-    )
-    assert failed.status_code == 200
-    assert failed.json()["status"] == "failed"
+    command_data = command.json()
+    identity = {"attempt_id": command_data["attempt_id"], "lease_owner": command_data["lease_owner"]}
+    def record(**kw):
+        response = client.post(f"/v1/publish-jobs/{job_id}/events", json={**identity, **kw}, headers=_headers(token))
+        assert response.status_code == 200, response.text
+        return response.json()
+    # Legacy callers cannot skip the lease/attempt contract.
+    legacy = client.post(f"/v1/publish-jobs/{job_id}/events", json={"stage": "reopen_verify", "status": "passed"}, headers=_headers(token))
+    assert legacy.status_code == 422
+    _publish_saved_checkpoint(record, command_data)
+    values = _publish_verification(command_data)
+    values.update(image_count=2, remote_image_count=2)
+    failed = record(stage="reopen_verify", status="passed", verification=values)
+    assert failed["status"] == "failed"
     retried = client.post(f"/v1/publish-jobs/{job_id}/retry", headers=_headers(token))
     assert retried.status_code == 200
     assert retried.json()["job_id"] == job_id
-
+    resumed = client.get("/v1/publisher/next-command?lease_owner=extension-next&blog_id=sence4u", headers=_headers(token))
+    assert resumed.status_code == 200
+    second = resumed.json()
     completed = client.post(
         f"/v1/publish-jobs/{job_id}/events",
-        json={
-            "stage": "reopen_verify",
-            "status": "passed",
-            "verification": {
-                "actual_title_hash": command.json()["title_hash"],
-                "actual_body_hash": command.json()["body_hash"],
-                "body_chars": command.json()["body_chars"],
-                "image_count": 3,
-                "remote_image_count": 3,
-            },
-        },
+        json={"attempt_id": second["attempt_id"], "lease_owner": second["lease_owner"],
+              "stage": "reopen_verify", "status": "passed", "verification": _publish_verification(second)},
         headers=_headers(token),
     )
     assert completed.status_code == 200

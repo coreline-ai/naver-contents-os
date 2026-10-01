@@ -49,6 +49,7 @@ describe('SmartEditor current-Chrome adapter', () => {
     publish.addEventListener('click', () => {
       const input = doc.createElement('input');
       input.id = 'tag-input';
+      input.addEventListener('keydown', (event) => { if (event.key === 'Enter') { const chip = doc.createElement('span'); chip.setAttribute('data-tag', input.value); doc.body.append(chip); } });
       doc.body.append(input);
     });
     await inputTags(doc, ['후쿠오카 여행']);
@@ -61,7 +62,7 @@ describe('SmartEditor current-Chrome adapter', () => {
     let clicks = 0;
     save.addEventListener('click', () => {
       clicks += 1;
-      save.textContent = '임시저장 1';
+      const ack = doc.createElement('span'); ack.className = 'save_complete'; ack.textContent = '저장 완료'; doc.body.append(ack);
     });
     await saveDraft(doc);
     expect(clicks).toBe(1);
@@ -69,6 +70,7 @@ describe('SmartEditor current-Chrome adapter', () => {
 
   it('blocks commands shorter than the strict 3,000 character gate', () => {
     expect(() => validateCommand({
+      attempt_id: 'attempt-1', lease_owner: 'worker-1', resume_stage: 'browser_attach', asset_manifest_hash: 'manifest',
       job_id: 1,
       draft_id: 1,
       draft_version: 1,
@@ -93,9 +95,11 @@ describe('SmartEditor current-Chrome adapter', () => {
     for (let index = 0; index < 3; index += 1) {
       const image = doc.createElement('img');
       image.src = `https://blogfiles.pstatic.net/example-${index}.jpg`;
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 400 } });
       bodyRoot.append(image);
     }
     const verification = await readEditorVerification(doc, {
+      attempt_id: 'attempt-1', lease_owner: 'worker-1', resume_stage: 'browser_attach', asset_manifest_hash: 'manifest',
       job_id: 7,
       draft_id: 2,
       draft_version: 1,
@@ -106,7 +110,8 @@ describe('SmartEditor current-Chrome adapter', () => {
       body_hash: await contentHash(body),
       body_chars: body.length,
       tags: [],
-      assets: [],
+      assets: Array.from({ length: 3 }, (_, i) => ({ asset_id: i + 1, draft_id: 2, draft_version: 1, filename: 'photo.png', mime_type: 'image/png' as const, byte_size: 1, sha256: 'sha' + i, position: i, anchor_after: 1, rights_status: 'approved' as const, created_at: null, native_path: '', download_url: '' })),
+      image_receipts: Array.from({ length: 3 }, (_, i) => ({ asset_id: i + 1, sha256: 'sha' + i, remote_url: `https://blogfiles.pstatic.net/example-${i}.jpg` })),
     });
     expect(verification).toMatchObject({
       title_hash_match: true,
@@ -117,7 +122,7 @@ describe('SmartEditor current-Chrome adapter', () => {
   });
 
   it('transfers an approved asset through the file input and waits for a pstatic URL', async () => {
-    const doc = editorFixture();
+    const doc = document; doc.body.innerHTML = editorFixture().body.innerHTML;
     const input = doc.createElement('input');
     input.type = 'file';
     input.accept = 'image/png';
@@ -125,12 +130,15 @@ describe('SmartEditor current-Chrome adapter', () => {
     input.addEventListener('change', () => {
       const image = doc.createElement('img');
       image.src = 'https://blogfiles.pstatic.net/uploaded.png';
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 400 } });
       doc.querySelector('.se-main-container')?.append(image);
     });
+    inputBody(doc, '이미지 삽입 문단');
     const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 1]);
     const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
       .map((value) => value.toString(16).padStart(2, '0')).join('');
     await uploadImages(doc, {
+      attempt_id: 'attempt-1', lease_owner: 'worker-1', resume_stage: 'browser_attach', asset_manifest_hash: 'manifest',
       job_id: 1, draft_id: 1, draft_version: 1, blog_id: 'sence4u',
       title: '제목', body: '본문'.repeat(2000), title_hash: '', body_hash: '', body_chars: 4000, tags: [],
       assets: [{

@@ -1054,6 +1054,11 @@ class DraftAssetResponse(BaseModel):
 
 
 class PublishJobCommandResponse(BaseModel):
+    attempt_id: str
+    lease_owner: str
+    resume_stage: Literal["browser_attach", "reopen_verify"]
+    asset_manifest_hash: str
+    image_receipts: list[dict] = Field(default_factory=list)
     job_id: int
     draft_id: int
     draft_version: int
@@ -1068,6 +1073,8 @@ class PublishJobCommandResponse(BaseModel):
 
 
 class PublishJobEventRequest(BaseModel):
+    attempt_id: str = Field(min_length=1, max_length=100)
+    lease_owner: str = Field(min_length=1, max_length=100)
     stage: Literal[
         "browser_attach", "health_check", "prepare_editor", "input_title", "input_body",
         "upload_images", "input_tags", "draft_save", "reopen_verify",
@@ -1341,7 +1348,7 @@ def add_draft_asset(
         return service.add(draft_id, **request.model_dump())
     except ValueError as exc:
         message = str(exc)
-        status = 404 if "not found" in message else 400
+        status = 404 if "not found" in message else 409 if "locked" in message else 400
         raise HTTPException(status_code=status, detail={"code": "asset_invalid", "message": message}) from exc
 
 
@@ -1368,7 +1375,7 @@ def generate_draft_guide_assets(
         return service.generate_guide_set(draft_id, request.draft_version, request.count)
     except ValueError as exc:
         message = str(exc)
-        status = 404 if "not found" in message else 400
+        status = 404 if "not found" in message else 409 if "locked" in message else 400
         raise HTTPException(status_code=status, detail={"code": "asset_generation_failed", "message": message}) from exc
 
 
@@ -1378,7 +1385,11 @@ def delete_draft_asset(
     asset_id: int,
     service: DraftAssetService = Depends(get_draft_asset_service),
 ) -> None:
-    if not service.delete(draft_id, asset_id):
+    try:
+        deleted = service.delete(draft_id, asset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "asset_locked", "message": str(exc)}) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft asset not found"})
 
 
@@ -1408,6 +1419,8 @@ def start_publish_job(
         )
     except PublishPreconditionError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+    except (ValueError, errors.DraftVersionConflict) as exc:
+        raise HTTPException(status_code=409, detail={"code": "publish_create_conflict", "message": str(exc)}) from exc
     if task is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft not found"})
     job = service.get_job(task.job_id)
@@ -1479,7 +1492,10 @@ def download_publish_asset(
     asset_id: int,
     service: PublishService = Depends(get_publish_service),
 ):
-    asset = service.asset_for_job(job_id, asset_id)
+    try:
+        asset = service.asset_for_job(job_id, asset_id)
+    except (ValueError, errors.DraftVersionConflict) as exc:
+        raise HTTPException(status_code=409, detail={"code": "asset_integrity_conflict", "message": str(exc)}) from exc
     if asset is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish asset not found"})
     return FileResponse(
@@ -1498,7 +1514,7 @@ def record_publish_job_event(
 ) -> dict:
     try:
         job = service.record_extension_event(job_id, **request.model_dump())
-    except ValueError as exc:
+    except (ValueError, errors.DraftVersionConflict) as exc:
         raise HTTPException(status_code=409, detail={"code": "publish_event_conflict", "message": str(exc)}) from exc
     if job is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish job not found"})
@@ -1510,7 +1526,10 @@ def retry_publish_job(
     job_id: int,
     service: PublishService = Depends(get_publish_service),
 ) -> dict:
-    job = service.retry(job_id)
+    try:
+        job = service.retry(job_id)
+    except (ValueError, errors.DraftVersionConflict) as exc:
+        raise HTTPException(status_code=409, detail={"code": "publish_retry_conflict", "message": str(exc)}) from exc
     if job is None:
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "publish job not found"})
     return job

@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Writer, type ImprovementInput } from '@ncos/workbench';
+import { Writer, DraftEditor, type ImprovementInput } from '@ncos/workbench';
 import { CoreClient, CoreError } from '@ncos/core-client';
 import type { DraftDetail } from '@ncos/contracts';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -152,7 +152,7 @@ it('lost publisher response locks retry; recovering the new job never sends anot
   const job = { job_id: 22, draft_id: 7, status: 'draft_saved', stage: 'saved', detail: '', history: [] };
   client.latestPublishJob.mockResolvedValue(job); client.getPublishJob.mockResolvedValue(job);
   await click('기존 임시저장 작업 다시 확인'); await settle();
-  expect(host.textContent).toContain('네이버 임시저장 확인됨'); expect(client.startPublishJob).toHaveBeenCalledTimes(1);
+  expect(host.textContent).toContain('구형 저장 응답 수신 · 재열기 미검증'); expect(client.startPublishJob).toHaveBeenCalledTimes(1);
 });
 it('definitive publisher version conflict offers latest comparison rather than an uncertainty deadlock', async () => {
   vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -166,4 +166,216 @@ it('rejects another drafts latest job instead of showing or using it', async () 
   await render(7); await input('#blog-id', 'test_blog');
   expect(host.textContent).toContain('다른 원고의 최근 작업 응답'); expect(button('네이버에 임시저장').disabled).toBe(true);
   expect(client.startPublishJob).not.toHaveBeenCalled();
+});
+
+
+function deferred<T>() { let resolve!: (value: T) => void, reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+const activeJob = { job_id: 21, draft_id: 7, status: 'running', stage: 'upload_images', detail: '', history: [] };
+function editable() { return ['#draft-title', '#draft-body', '#version-note', '#blog-id', '#publish-tags'].map(selector => host.querySelector(selector) as HTMLInputElement); }
+function checkMutationLock() {
+  expect(editable().every(element => element.disabled)).toBe(true);
+  expect((host.querySelector('input[type="file"]') as HTMLInputElement).disabled).toBe(true);
+  expect([...host.querySelectorAll('button')].filter(element => element.textContent === '삭제').every(element => element.disabled)).toBe(true);
+  expect(button('수정 내용 저장').disabled).toBe(true);
+  expect((button('네이버에 임시저장') || button('작업 요청 중…')).disabled).toBe(true);
+}
+it('defaults to 3500 characters and explains the 3000-character verified-save minimum', async () => {
+  await render(); expect((host.querySelector('#length') as HTMLSelectElement).value).toBe('3500');
+  expect(host.textContent).toContain('실제 본문 3,000자 이상');
+  expect(host.querySelector('option[value="2500"]')?.textContent).toContain('짧은 로컬 원고');
+  await input('#topic', '검수 주제'); await click('완성 글 만들기');
+  expect(client.composeBlog).toHaveBeenCalledWith(expect.objectContaining({ target_chars: 3500 }));
+});
+it.each([2999, 3000])('uses the actual %i-character body for the save boundary, not the target length', async chars => {
+  client.getDraft.mockResolvedValue({ ...detail, versions: [{ ...detail.versions[0], body: '가'.repeat(chars) }] });
+  await render(7); await input('#blog-id', 'test_blog');
+  expect(button('네이버에 임시저장').disabled).toBe(chars < 3000);
+  if (chars < 3000) expect(host.textContent).toContain('본문이 1자 더 필요합니다');
+});
+it.each(['pending', 'running', 'waiting_extension'])('locks all editing and asset mutations for an existing %s job', async status => {
+  client.latestPublishJob.mockResolvedValue({ ...activeJob, status }); client.getPublishJob.mockResolvedValue({ ...activeJob, status });
+  await render(7); await settle(); checkMutationLock();
+  await click('삭제');
+  expect(client.deleteDraftAsset).not.toHaveBeenCalled(); expect(client.startPublishJob).not.toHaveBeenCalled();
+  expect(host.textContent).toContain('원고와 이미지를 변경할 수 없습니다');
+});
+it('locks mutations during previous-job lookup and its refetch, including a same-tick publish click', async () => {
+  const lookup = deferred<null>(); client.latestPublishJob.mockReturnValueOnce(lookup.promise);
+  preferences.blogId = 'test_blog'; await render(7); checkMutationLock();
+  await act(async () => lookup.resolve(null)); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+  const refresh = deferred<null>(); client.latestPublishJob.mockReturnValueOnce(refresh.promise);
+  await act(async () => { button('기존 임시저장 작업 다시 확인').click(); button('네이버에 임시저장').click(); });
+  await settle(); checkMutationLock(); expect(client.startPublishJob).not.toHaveBeenCalled();
+  await act(async () => refresh.resolve(null)); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+});
+it('keeps editing and assets locked when the previous-job lookup fails', async () => {
+  client.latestPublishJob.mockRejectedValue(new Error('최근 작업 연결 끊김'));
+  await render(7); checkMutationLock(); expect(host.textContent).toContain('최근 작업 연결 끊김');
+});
+it('locks mutations while publishing is requested and until the active job becomes terminal', async () => {
+  preferences.blogId = 'test_blog'; vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const requested = deferred<unknown>(); client.startPublishJob.mockReturnValue(requested.promise); client.getPublishJob.mockResolvedValue(activeJob);
+  await render(7);
+  await act(async () => { button('네이버에 임시저장').click(); button('삭제').click(); button('네이버에 임시저장').click(); });
+  checkMutationLock(); expect(client.startPublishJob).toHaveBeenCalledTimes(1); expect(client.deleteDraftAsset).not.toHaveBeenCalled();
+  await act(async () => requested.resolve(activeJob)); await settle(); checkMutationLock();
+  await act(async () => query.setQueryData(['workbench-publish', 21], { ...activeJob, status: 'verified_draft_saved', stage: 'reopen_verify' })); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+  expect(host.textContent).toContain('재열기 검증까지 완료');
+});
+it('locks guide generation in an active job even when there are fewer than three assets', async () => {
+  client.listDraftAssets.mockResolvedValue([]); client.latestPublishJob.mockResolvedValue(activeJob); client.getPublishJob.mockResolvedValue(activeJob);
+  await render(7); await settle(); expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(true);
+  await click('앱이 안내 이미지 3장 만들기'); expect(client.generateDraftGuideAssets).not.toHaveBeenCalled();
+});
+it('blocks a publisher POST in the same tick that deletion starts', async () => {
+  preferences.blogId = 'test_blog'; vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const deletion = deferred<void>(); client.deleteDraftAsset.mockReturnValue(deletion.promise);
+  await render(7);
+  await act(async () => { button('삭제').click(); button('네이버에 임시저장').click(); button('삭제').click(); });
+  expect(client.deleteDraftAsset).toHaveBeenCalledTimes(1); expect(client.startPublishJob).not.toHaveBeenCalled(); checkMutationLock();
+  await act(async () => deletion.resolve()); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+});
+it('blocks saving an edited version while an asset mutation is in flight', async () => {
+  await render(7); await input('#draft-body', detail.versions[0].body + '수정');
+  const deletion = deferred<void>(); client.deleteDraftAsset.mockReturnValue(deletion.promise);
+  await act(async () => { button('삭제').click(); button('수정 내용 저장').click(); });
+  expect(client.deleteDraftAsset).toHaveBeenCalledOnce(); expect(client.addDraftVersion).not.toHaveBeenCalled();
+  await act(async () => deletion.resolve()); await settle();
+});
+it('blocks deleting assets in the same tick that a version save starts', async () => {
+  await render(7); await input('#draft-body', detail.versions[0].body + '수정');
+  const saving = deferred<unknown>(); client.addDraftVersion.mockReturnValue(saving.promise);
+  await act(async () => { button('수정 내용 저장').click(); button('삭제').click(); });
+  expect(client.addDraftVersion).toHaveBeenCalledOnce(); expect(client.deleteDraftAsset).not.toHaveBeenCalled();
+  await act(async () => saving.resolve({ draft_id: 7, version: 2 })); await settle();
+});
+it('blocks a second guide generation and edits synchronously until the asset refresh finishes', async () => {
+  client.listDraftAssets.mockResolvedValue([]); const generated = deferred<unknown>(); client.generateDraftGuideAssets.mockReturnValue(generated.promise);
+  await render(7); const original = detail.versions[0].title;
+  await act(async () => { button('앱이 안내 이미지 3장 만들기').click(); button('앱이 안내 이미지 3장 만들기').click(); });
+  checkMutationLock(); expect(client.generateDraftGuideAssets).toHaveBeenCalledTimes(1);
+  await input('#draft-title', '처리 중 바꿀 제목');
+  expect((host.querySelector('#draft-title') as HTMLInputElement).value).toBe(original);
+  await act(async () => generated.resolve([])); await settle();
+});
+it('locks mutations after an uncertain publisher response and unlocks only after a newer terminal job is found', async () => {
+  preferences.blogId = 'test_blog'; vi.spyOn(window, 'confirm').mockReturnValue(true); client.startPublishJob.mockRejectedValue(new Error('응답 유실'));
+  await render(7); await click('네이버에 임시저장'); checkMutationLock();
+  await click('기존 임시저장 작업 다시 확인'); checkMutationLock();
+  client.latestPublishJob.mockResolvedValue({ ...activeJob, status: 'failed' }); client.getPublishJob.mockResolvedValue({ ...activeJob, status: 'failed' });
+  await click('기존 임시저장 작업 다시 확인'); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+  expect(client.startPublishJob).toHaveBeenCalledTimes(1);
+});
+it('blocks asset mutation and publisher requests when the asset list cannot be verified', async () => {
+  preferences.blogId = 'test_blog'; client.listDraftAssets.mockRejectedValue(new Error('이미지 목록 연결 실패'));
+  await render(7); expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(true);
+  expect(button('네이버에 임시저장').disabled).toBe(true);
+  expect(host.textContent).toContain('이미지 목록을 확인하지 못해 변경과 임시저장을 막았습니다');
+});
+it('never labels a legacy save ACK as reopen-verified success', async () => {
+  client.latestPublishJob.mockResolvedValue({ ...activeJob, status: 'draft_saved' }); client.getPublishJob.mockResolvedValue({ ...activeJob, status: 'draft_saved' });
+  await render(7); await settle();
+  expect(host.textContent).toContain('구형 저장 응답 수신 · 재열기 미검증');
+  expect(host.textContent).toContain('완전한 저장 성공으로 판단하지 마세요');
+  expect(host.textContent).not.toContain('재열기 검증까지 완료');
+});
+it('ignores an older latest-comparison response that returns after the newer request', async () => {
+  await render(7); await input('#draft-body', '사용자 원고'); client.addDraftVersion.mockRejectedValue(new Error('비교 필요'));
+  await click('수정 내용 저장');
+  const older = deferred<DraftDetail>(), newer = deferred<DraftDetail>();
+  client.getDraft.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+  await click('최신 원고와 비교'); await click('최신 원고와 비교');
+  await act(async () => newer.resolve({ ...detail, versions: [{ ...detail.versions[0], version: 3, title: '최신 v3' }] })); await settle();
+  await act(async () => older.resolve({ ...detail, versions: [{ ...detail.versions[0], version: 2, title: '늦은 v2' }] })); await settle();
+  expect(host.textContent).toContain('서버 최신 v3'); expect(host.textContent).not.toContain('늦은 v2');
+  expect((host.querySelector('#draft-body') as HTMLTextAreaElement).value).toBe('사용자 원고');
+});
+it('ignores comparison responses and errors after the editor version changes', async () => {
+  const updated = { ...detail, versions: [...detail.versions, { ...detail.versions[0], version: 2, title: '저장된 v2' }] };
+  const onUpdated = vi.fn();
+  const editor = (draft: DraftDetail) => <QueryClientProvider client={query}><DraftEditor client={client as unknown as CoreClient} draft={draft} quality={null} suggestedTags={[]} preferences={preferences} onPreferences={vi.fn()} onDirtyChange={vi.fn()} onUpdated={onUpdated} disabled={false}/></QueryClientProvider>;
+  await act(async () => root.render(editor(detail))); await settle();
+  await input('#draft-body', '수정 원고'); client.addDraftVersion.mockRejectedValue(new Error('비교 필요')); await click('수정 내용 저장');
+  const pendingComparison = deferred<DraftDetail>(); client.getDraft.mockReturnValueOnce(pendingComparison.promise); await click('최신 원고와 비교');
+  await act(async () => root.render(editor(updated))); await settle();
+  await act(async () => pendingComparison.resolve({ ...detail, versions: [{ ...detail.versions[0], version: 9, title: '이전 요청 결과' }] })); await settle();
+  expect(host.textContent).not.toContain('서버 최신 v9'); expect((host.querySelector('#draft-title') as HTMLInputElement).value).toBe('저장된 v2');
+});
+it('rejects comparison data belonging to another draft', async () => {
+  await render(7); await input('#draft-body', '수정 원고'); client.addDraftVersion.mockRejectedValue(new Error('비교 필요')); await click('수정 내용 저장');
+  client.getDraft.mockResolvedValue({ ...detail, draft_id: 999 }); await click('최신 원고와 비교');
+  expect(host.textContent).toContain('다른 원고의 비교 응답'); expect(host.textContent).not.toContain('서버 최신 v1');
+});
+
+it('blocks synchronous save/publish/delete while uploading an approved file', async () => {
+  preferences.blogId = 'test_blog'; vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const upload = deferred<unknown>(); client.addDraftAsset.mockReturnValue(upload.promise);
+  await render(7); await input('#draft-body', detail.versions[0].body + '수정');
+  await act(async () => [...host.querySelectorAll('label')].find(label => label.textContent?.includes('내 파일을 추가할 경우'))!.querySelector('input')!.click());
+  const file = host.querySelector('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(file, 'files', { configurable: true, value: [new File(['image'], 'my-photo.png', { type: 'image/png' })] });
+  await act(async () => { file.dispatchEvent(new Event('change', { bubbles: true })); button('수정 내용 저장').click(); button('삭제').click(); }); await settle();
+  expect(client.addDraftAsset).toHaveBeenCalledOnce(); expect(client.addDraftVersion).not.toHaveBeenCalled(); expect(client.deleteDraftAsset).not.toHaveBeenCalled();
+  checkMutationLock(); await act(async () => upload.resolve({ asset_id: 4 })); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+});
+it('fills a free image slot after deleting an earlier image instead of colliding with the last position', async () => {
+  const original = await client.listDraftAssets();
+  client.listDraftAssets.mockResolvedValue(original.filter((asset: { position: number }) => asset.position !== 0));
+  client.addDraftAsset.mockResolvedValue({ asset_id: 4 });
+  await render(7);
+  await act(async () => [...host.querySelectorAll('label')].find(label => label.textContent?.includes('내 파일을 추가할 경우'))!.querySelector('input')!.click());
+  const file = host.querySelector('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(file, 'files', { configurable: true, value: [new File(['image'], 'replacement.png', { type: 'image/png' })] });
+  await act(async () => file.dispatchEvent(new Event('change', { bubbles: true })));
+  await settle();
+  expect(client.addDraftAsset).toHaveBeenCalledWith(7, expect.objectContaining({ position: 0, anchor_after: 1 }));
+});
+it('blocks publish when an approved file starts uploading before React renders its busy state', async () => {
+  preferences.blogId = 'test_blog'; vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const upload = deferred<unknown>(); client.addDraftAsset.mockReturnValue(upload.promise);
+  await render(7); await act(async () => [...host.querySelectorAll('label')].find(label => label.textContent?.includes('내 파일을 추가할 경우'))!.querySelector('input')!.click());
+  const file = host.querySelector('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(file, 'files', { configurable: true, value: [new File(['image'], 'my-photo.png', { type: 'image/png' })] });
+  await act(async () => { file.dispatchEvent(new Event('change', { bubbles: true })); button('네이버에 임시저장').click(); }); await settle();
+  expect(client.addDraftAsset).toHaveBeenCalledOnce(); expect(client.startPublishJob).not.toHaveBeenCalled();
+  await act(async () => upload.resolve({ asset_id: 4 })); await settle();
+});
+it('recovers an unknown job query with the explicit previous-job check', async () => {
+  client.latestPublishJob.mockResolvedValue({ ...activeJob, status: 'draft_saved' }); client.getPublishJob.mockRejectedValue(new Error('작업 확인 실패'));
+  await render(7); await settle(); checkMutationLock();
+  client.latestPublishJob.mockResolvedValue({ ...activeJob, status: 'verified_draft_saved', stage: 'reopen_verify' });
+  await click('기존 임시저장 작업 다시 확인'); await settle();
+  expect((host.querySelector('#draft-title') as HTMLInputElement).disabled).toBe(false);
+  expect(host.textContent).toContain('재열기 검증까지 완료');
+});
+it('lets users recover a failed asset lookup without recreating the draft', async () => {
+  client.listDraftAssets.mockRejectedValueOnce(new Error('목록 실패')).mockResolvedValue([]);
+  await render(7); expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(true);
+  await click('이미지 목록 다시 확인');
+  expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(false);
+  expect(client.composeBlog).not.toHaveBeenCalled();
+});
+it('discards a late comparison error after changing the draft identity', async () => {
+  const other = { ...detail, draft_id: 9, versions: [{ ...detail.versions[0], title: '다른 원고' }] };
+  const editor = (draft: DraftDetail) => <QueryClientProvider client={query}><DraftEditor client={client as unknown as CoreClient} draft={draft} quality={null} suggestedTags={[]} preferences={preferences} onPreferences={vi.fn()} onDirtyChange={vi.fn()} onUpdated={vi.fn()} disabled={false}/></QueryClientProvider>;
+  await act(async () => root.render(editor(detail))); await settle();
+  await input('#draft-body', '수정 원고'); client.addDraftVersion.mockRejectedValue(new Error('비교 필요')); await click('수정 내용 저장');
+  const comparison = deferred<DraftDetail>(); client.getDraft.mockReturnValueOnce(comparison.promise); await click('최신 원고와 비교');
+  await act(async () => root.render(editor(other))); await settle();
+  await act(async () => comparison.reject(new Error('이전 원고 비교 실패'))); await settle();
+  expect(host.textContent).not.toContain('이전 원고 비교 실패');
+  expect((host.querySelector('#draft-title') as HTMLInputElement).value).toBe('다른 원고');
+});
+
+it('locks mutations on a mismatched job ID even if the response belongs to the same draft', async () => {
+  client.latestPublishJob.mockResolvedValue({ ...activeJob, status: 'draft_saved' });
+  client.getPublishJob.mockResolvedValue({ ...activeJob, job_id: 99, status: 'draft_saved' });
+  await render(7); await settle(); checkMutationLock();
+  expect(host.textContent).toContain('다른 원고 또는 작업의 응답');
 });

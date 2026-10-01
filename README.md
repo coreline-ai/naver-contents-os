@@ -15,7 +15,7 @@
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Node 24](https://img.shields.io/badge/Node.js-24-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)
 ![Codex CLI](https://img.shields.io/badge/Codex_CLI-ChatGPT_OAuth-111827?style=flat-square&logo=openai&logoColor=white)
-![Tests](https://img.shields.io/badge/Tests-486_passing-2EA44F?style=flat-square&logo=checkmarx&logoColor=white)
+![Tests](https://img.shields.io/badge/Tests-local_verify-2EA44F?style=flat-square&logo=checkmarx&logoColor=white)
 ![Local First](https://img.shields.io/badge/Data-Local_First-6F42C1?style=flat-square&logo=sqlite&logoColor=white)
 
 [핵심 기능](#-핵심-기능) · [완성 글 작성](#️-완성-글-자동-작성) · [최신 키워드](#-최신-키워드-추천) · [사용 흐름](#-콘텐츠-운영-흐름) · [빠른 시작](#-빠른-시작)
@@ -24,6 +24,22 @@
 
 > [!IMPORTANT]
 > Naver Content OS는 **자동 공개 발행 도구가 아닙니다.** SmartEditor에는 제목·본문·태그를 입력하고 **임시저장까지만** 수행합니다. 최종 검토와 공개 발행은 사용자가 직접 진행합니다.
+
+### 현재 개발 상태 — 2026-10-01
+
+- 현재 Chrome 확장 명령 브리지, 버전별 이미지 등록/안내 그림 생성/업로드, 저장본 재열기 검증 코드가 있습니다. 웹의 현재 페이지 분석 자료 수집 연결은 별도 잔여입니다.
+- 안전성 보강 작업: 실행 회차·작업 점유·재시도 단계·고정 이미지 목록·기존 글 보호·입력/저장 확인·작성 화면 경합을 검증합니다.
+- **자동 테스트는 실제 네이버 저장 성공의 증거가 아닙니다.** 이번 작업 전 로컬 이력은 검증 완료 저장 0건이며, 실제 계정 인수 전에는 앱 단독 1회 성공으로 표시하지 않습니다.
+- 최신/급상승 추천은 입력 주제 기반 후보입니다. 전체 분야의 실시간 인기어 순위가 아니며, 앱 안내 그림 생성도 이미지 AI 모델 생성과 다릅니다.
+- 진행 순서와 완료/미완료 근거: [안정화 및 잔여 개발 계획](dev-plan/implement_20261001_214011.md).
+
+Chrome 없이 임시저장 로직을 다시 검수하려면:
+
+```bash
+pnpm test:publisher
+```
+
+별도 임시 DB의 HTTP 상태 계약, 가짜 debugger의 입력/업로드/재열기, 작성 UI 경합을 검사합니다. 운영 DB·실제 네이버 계정·외부 AI/API를 실행하지 않으며, 실제 Chrome의 전체 앱 E2E나 실계정 인수 성공을 증명하는 명령은 아닙니다.
 
 ---
 
@@ -71,7 +87,7 @@
 | 입력 | 선택 항목 |
 |---|---|
 | 글 스타일 | 자동, 정보형, 후기형, 구매가이드 |
-| 글 길이 | 약 2,500자, 약 4,000자 |
+| 글 길이 | 기본 약 3,500자(권장), 약 3,000/4,000자. 2,500자는 짧은 로컬 원고용 |
 | 사용자 메모 | 직접 경험, 반드시 포함할 사실, 대상 독자 등 최대 2,000자 |
 
 - 실제 AI가 준비되지 않으면 구조 템플릿을 완성 글처럼 표시하지 않고 해결 방법을 안내합니다.
@@ -79,6 +95,7 @@
 - 생성 원고가 품질 Gate를 통과하지 못하면 전체 재작성하거나, 내용은 정상이고 분량만 짧을 때 최대 3회 소규모 보강합니다. 재검사 실패 원고는 Draft DB에 저장하지 않습니다.
 - 화면의 `자동 검사 점수`는 분량·반복·키워드 과다·민감정보 노출 같은 구조적 위험 검사 결과이며 사실 정확성을 보증하는 점수가 아닙니다.
 - `참고 사진 찾기`는 원고 생성 후 사용자가 눌렀을 때만 호출되며 사진을 자동 삽입하지 않습니다.
+- 네이버 임시저장은 실제 본문 3,000자 이상과 승인 이미지 3장 이상이 필요합니다. 먼저 원고·이미지를 검수한 뒤 별도로 임시저장을 요청합니다. 생성부터 저장까지 단일 승인으로 실행하는 흐름은 후속 개발입니다.
 - 키워드 분석, 급상승, FactPack, Research Workspace는 닫힌 **`상세 도구`**에서 선택적으로 사용합니다.
 
 > [!NOTE]
@@ -383,7 +400,19 @@ Ollama를 유지하려면 `LLM_PROVIDER=local`과 `OLLAMA_MODEL`을 직접 설�
 
 ## 📝 SmartEditor 실행 준비
 
-Chrome 136+에서는 기본 Chrome profile에 remote debugging을 사용할 수 없으므로 전용 profile을 사용합니다.
+### 권장: 현재 로그인한 Chrome + 확장
+
+1. `pnpm build:ext` 후 Chrome 확장 관리에서 Naver Content OS를 새로고침합니다. 앱과 확장은 함께 업데이트해야 합니다.
+2. `pnpm app:start`로 웹 작업실에 연결하고 현재 Chrome에서 대상 네이버 블로그에 로그인합니다.
+3. 원고 3,000자 이상과 승인 이미지 3장 이상을 준비해 앱의 `네이버에 임시저장`을 실행합니다.
+4. 작성 중인 다른 글은 자동으로 덮어쓰지 않습니다. 보호 오류가 발생하면 해당 글을 먼저 보존하고 빈 편집기를 준비합니다.
+5. **`재열기 검증까지 완료`**만 엄격한 성공입니다. 저장 버튼 클릭·구형 `draft_saved`는 같은 판정이 아닙니다.
+
+모델·provider·접속 주소 변경 후에는 실행기가 이전 설정의 서버 재사용을 거부합니다. 기존 서버를 정상 종료한 뒤 재시작하세요. 비밀키 값의 교체도 직접 재시작해야 하며, 키 자체는 공개 버전 지문에 포함하지 않습니다.
+
+### 보조: 전용 CDP 브라우저
+
+기존 CLI/CDP 경로는 유지하지만 현재 Chrome 확장 경로의 이미지·재열기 성공과 동일하게 취급하지 않습니다. 전용 profile 준비:
 
 ```bash
 pnpm build:ext
@@ -522,13 +551,15 @@ uv run python scripts/verify_searchad.py --research "러닝화"
 - Creator·Biz·Search Advisor 집계표 가져오기와 내 성과 funnel·개선 추천
 - 추천 확인 후 제목 개선·본문 최신화·후속 글 Draft 연결
 - SmartStore 추적 링크와 독립 웹사이트 성과 선택 기능
-- SmartEditor 제목·본문·태그 입력과 임시저장 검증
+- SmartEditor 제목·본문·태그와 승인 이미지 입력, 임시저장·재열기 검증 경로
 - 로컬 인증, cache, quota, provenance, secret 추적 방지
 
 ### ⛔ 포함하지 않음
 
 - 자동 공개 발행
-- 이미지 자동 업로드
+- 이용 권리가 확인되지 않은 이미지 자동 수집·업로드
+- 데이터원 미확정 범분야 실시간 인기어 순위
+- 설정하지 않은 AI 이미지 모델을 통한 사진 생성
 - 댓글·공감 자동화
 - 다계정 운영 자동화
 - Watchlist 백그라운드 자동 갱신
@@ -547,7 +578,7 @@ uv run python scripts/verify_searchad.py --research "러닝화"
 - [구현 사항 전문가 분석](./docs/14_implementation_expert_review.md)
 - [Advisor 성과 연동 전문가 검토](./docs/15_advisor_performance_expert_review.md)
 - [내 성과 가져오기·브라우저 없이 테스트](./docs/16_performance_import_and_browserless_testing.md)
-- [현재 개발 계획](./dev-plan/implement_20260906_083105.md)
+- [현재 개발 계획](./dev-plan/implement_20261001_214011.md)
 - [최신 HANDOFF](./HANDOFF.md)
 
 ---

@@ -9,11 +9,14 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+from typing import Callable
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.exc import IntegrityError
 
-from app.models_db import Draft, DraftVersion, Keyword, KeywordSnapshot, PublishJob
+from app.models_db import Draft, DraftAsset, DraftVersion, Keyword, KeywordSnapshot, PublishJob
 from app.errors import DraftVersionConflict
 from app.services.factpacks import FactPackService, render_approved_evidence
 from planner.article_quality import build_expansion_prompt, build_repair_prompt, evaluate_article
@@ -557,6 +560,27 @@ class SqlJobStore:
         request_payload: dict | None = None,
     ) -> int:
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            if idempotency_key:
+                existing = session.scalar(select(PublishJob.id).where(PublishJob.idempotency_key == idempotency_key))
+                if existing is not None:
+                    return existing
+            if transport == "current_chrome_extension":
+                snapshot = (request_payload or {}).get("asset_snapshot")
+                if snapshot is None:
+                    raise ValueError("an immutable image snapshot is required")
+                rows = session.scalars(select(DraftAsset).where(
+                    DraftAsset.draft_id == draft_id, DraftAsset.draft_version == draft_version,
+                ).order_by(DraftAsset.position, DraftAsset.id)).all()
+                actual = [{key: getattr(row, "id" if key == "asset_id" else key) for key in expected} for row, expected in zip(rows, snapshot)]
+                if len(rows) != len(snapshot) or actual != snapshot:
+                    raise DraftVersionConflict("이미지 구성이 작업 생성 중 변경되었습니다.")
+                active = session.scalar(select(PublishJob.id).where(
+                    PublishJob.draft_id == draft_id, PublishJob.draft_version == draft_version,
+                    PublishJob.status.in_(("pending", "waiting_extension", "running")),
+                ))
+                if active is not None:
+                    raise DraftVersionConflict("현재 원고 버전의 임시저장 작업이 진행 중입니다.")
             job = PublishJob(
                 draft_id=draft_id,
                 status="pending",
@@ -569,7 +593,16 @@ class SqlJobStore:
                 verification={},
             )
             session.add(job)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                if not idempotency_key:
+                    raise
+                existing = session.scalar(select(PublishJob.id).where(PublishJob.idempotency_key == idempotency_key))
+                if existing is None:
+                    raise
+                return existing
             return job.id
 
     def by_idempotency_key(self, key: str) -> dict | None:
@@ -577,17 +610,30 @@ class SqlJobStore:
             job_id = session.scalar(select(PublishJob.id).where(PublishJob.idempotency_key == key))
         return self.get(job_id) if job_id is not None else None
 
-    def restart(self, job_id: int) -> None:
+    def restart(self, job_id: int, *, only_if_failed: bool = False) -> None:
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             job = session.get(PublishJob, job_id)
-            if job is None:
+            if job is None or job.status in {"draft_saved", "verified_draft_saved"}:
                 return
-            resume_stage = "reopen_verify" if job.stage == "reopen_verify" else "browser_attach"
+            if job.status != "failed":
+                if only_if_failed:
+                    return  # A concurrent identical request already resumed it.
+                raise ValueError("only a failed publish job can be restarted")
+            other = session.scalar(select(PublishJob.id).where(
+                PublishJob.draft_id == job.draft_id, PublishJob.draft_version == job.draft_version,
+                PublishJob.id != job.id, PublishJob.status.in_(("pending", "waiting_extension", "running")),
+            ))
+            if other is not None:
+                raise DraftVersionConflict("현재 원고 버전의 다른 임시저장 작업이 진행 중입니다.")
+            payload = dict(job.request_payload or {})
+            passed = payload.get("passed_stages", [])
+            resume_stage = "reopen_verify" if job.stage in {"draft_save", "reopen_verify"} or "draft_save" in passed else "browser_attach"
+            payload.update(resume_stage=resume_stage, attempt_id=None, passed_stages=[])
+            job.request_payload = payload
             entry = {
-                "stage": resume_stage,
-                "status": "pending",
-                "at": datetime.now(timezone.utc).isoformat(),
-                "error_code": None,
+                "stage": resume_stage, "status": "pending",
+                "at": datetime.now(timezone.utc).isoformat(), "error_code": None,
                 "detail": "same idempotent job restarted",
             }
             job.status = "pending"
@@ -601,23 +647,136 @@ class SqlJobStore:
             job.history = [*job.history, entry]
             session.commit()
 
-    def claim_lease(self, job_id: int, owner: str, *, ttl_seconds: int = 90) -> bool:
+    def claim_lease(self, job_id: int, owner: str, *, ttl_seconds: int = 300) -> bool:
+        if not owner.strip() or len(owner) > 100:
+            raise ValueError("a valid extension lease owner is required")
         now = datetime.now(timezone.utc)
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            claimed = session.execute(
+                update(PublishJob).where(
+                    PublishJob.id == job_id,
+                    PublishJob.status.in_(("pending", "waiting_extension")),
+                    or_(PublishJob.lease_owner.is_(None), PublishJob.lease_expires_at.is_(None), PublishJob.lease_expires_at <= now),
+                ).values(lease_owner=owner, lease_expires_at=now + timedelta(seconds=ttl_seconds), status="running")
+            ).rowcount
+            if claimed != 1:
+                return False
             job = session.get(PublishJob, job_id)
-            if job is None:
-                return False
-            expires = job.lease_expires_at
-            if expires is not None and expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            if job.lease_owner and job.lease_owner != owner and expires and expires > now:
-                return False
-            job.lease_owner = owner[:100]
-            job.lease_expires_at = now + timedelta(seconds=ttl_seconds)
+            payload = dict(job.request_payload or {})
+            resume_stage = payload.get("resume_stage") or ("reopen_verify" if job.stage == "reopen_verify" else "browser_attach")
+            payload.update(attempt_id=uuid4().hex, resume_stage=resume_stage, passed_stages=[])
+            job.request_payload = payload
+            # Claim is not an editor event: preserve the saved-draft checkpoint.
+            job.stage = resume_stage
+            job.history = [*job.history, {
+                "stage": resume_stage, "status": "running", "at": now.isoformat(),
+                "detail": "extension claimed publish job", "attempt_id": payload["attempt_id"],
+            }]
             session.commit()
             return True
 
+    def mark_waiting(self, job_id: int) -> None:
+        with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            job = session.get(PublishJob, job_id)
+            if job is None or job.status not in {"pending", "waiting_extension"}:
+                return
+            if job.status == "waiting_extension":
+                return
+            stage = "reopen_verify" if job.stage == "reopen_verify" else "browser_attach"
+            job.status = "waiting_extension"
+            job.stage = stage
+            job.detail = "waiting for current Chrome extension"
+            job.history = [*job.history, {"stage": stage, "status": "waiting_extension", "at": datetime.now(timezone.utc).isoformat(), "detail": job.detail}]
+            session.commit()
+
+    def extension_event(
+        self, job_id: int, *, attempt_id: str, lease_owner: str,
+        stage: str, status: str, error_code: str | None, detail: str,
+        verification: dict | None, stages: tuple[str, ...],
+        validate: Callable[[dict], tuple[str, str | None, str]],
+    ) -> dict | None:
+        """Serialize identity, legal transition, checkpoint and history in one write."""
+        now = datetime.now(timezone.utc)
+        with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            job = session.get(PublishJob, job_id)
+            if job is None:
+                return None
+            payload = dict(job.request_payload or {})
+            expires = job.lease_expires_at
+            if expires is not None and expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if (job.transport != "current_chrome_extension" or not attempt_id or not lease_owner
+                    or payload.get("attempt_id") != attempt_id or job.lease_owner != lease_owner
+                    or expires is None or expires <= now):
+                raise ValueError("publisher attempt or lease is stale")
+            if job.status in {"failed", "draft_saved", "verified_draft_saved"}:
+                raise ValueError("terminal publish jobs do not accept extension events")
+            sequence = ("reopen_verify",) if payload.get("resume_stage") == "reopen_verify" else stages
+            passed = list(payload.get("passed_stages", []))
+            next_stage = sequence[len(passed)] if len(passed) < len(sequence) else None
+            optional_attach = payload.get("resume_stage") == "reopen_verify" and stage == "browser_attach" and not passed
+            uncertain_ack = status == "failed" and passed and passed[-1] == stage and job.stage == stage
+            if stage != next_stage and not optional_attach and not uncertain_ack:
+                raise ValueError("publisher stage transition is not allowed")
+            row = self._view(job)
+            result_status, result_error, result_detail = validate(row)
+            if status == "passed" and result_status != "failed" and not optional_attach:
+                passed.append(stage)
+            payload["passed_stages"] = passed
+            job.request_payload = payload
+            if verification is not None:
+                values = dict(job.verification or {})
+                # Upload receipts are an immutable checkpoint; a bad reopen
+                # observation cannot replace them and poison a later retry.
+                incoming = dict(verification)
+                if stage != "upload_images" or status != "passed" or result_status == "failed":
+                    incoming.pop("image_receipts", None)
+                values.update(incoming)
+                job.verification = values
+            job.status = result_status
+            job.stage = stage
+            job.error_code = result_error
+            job.detail = result_detail
+            job.lease_expires_at = now + timedelta(seconds=300)
+            job.history = [*job.history, {
+                "stage": stage, "status": "failed" if result_status == "failed" else status,
+                "at": now.isoformat(), "attempt_id": attempt_id,
+                "error_code": result_error, "detail": result_detail,
+                **({"verification": verification} if verification is not None else {}),
+            }]
+            session.commit()
+            return self._view(job)
+
+    def expire_leases(self, job_id: int | None = None) -> int:
+        """Close stalled attempts, never automatically start a new writer."""
+        now = datetime.now(timezone.utc)
+        with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            query = select(PublishJob).where(
+                PublishJob.transport == "current_chrome_extension",
+                PublishJob.status == "running",
+                PublishJob.lease_expires_at.is_not(None), PublishJob.lease_expires_at <= now,
+            )
+            if job_id is not None:
+                query = query.where(PublishJob.id == job_id)
+            jobs = session.scalars(query).all()
+            for job in jobs:
+                job.status = "failed"
+                job.error_code = "lease_expired"
+                job.detail = "확장 연결이 끊겨 실행이 중단되었습니다. 저장 단계였다면 재시도 시 저장본 확인만 진행합니다."
+                job.history = [*job.history, {
+                    "stage": job.stage, "status": "failed", "at": now.isoformat(),
+                    "attempt_id": (job.request_payload or {}).get("attempt_id"),
+                    "error_code": "lease_expired", "detail": job.detail,
+                }]
+            session.commit()
+            return len(jobs)
+
     def next_available(self, transport: str, blog_ids: list[str] | None = None) -> int | None:
+        self.expire_leases()
         now = datetime.now(timezone.utc)
         eligible = {value.strip().casefold() for value in (blog_ids or []) if value.strip()}
         if blog_ids is not None and not eligible:
@@ -652,9 +811,12 @@ class SqlJobStore:
         self, job_id: int, *, status: str, stage: str, error_code: str | None, detail: str, history_entry: dict
     ) -> None:
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             job = session.get(PublishJob, job_id)
             if job is None:
                 return
+            if job.status in {"failed", "draft_saved", "verified_draft_saved"}:
+                raise ValueError("terminal publish jobs do not accept updates")
             job.status = status
             job.stage = stage
             job.error_code = error_code
@@ -664,10 +826,11 @@ class SqlJobStore:
 
     def update_verification(self, job_id: int, verification: dict) -> None:
         with self._sessions() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             job = session.get(PublishJob, job_id)
             if job is None:
                 return
-            job.verification = dict(verification)
+            job.verification = {**(job.verification or {}), **verification}
             session.commit()
 
     def get(self, job_id: int) -> dict | None:
@@ -675,20 +838,17 @@ class SqlJobStore:
             job = session.get(PublishJob, job_id)
             if job is None:
                 return None
-            return {
-                "job_id": job.id,
-                "draft_id": job.draft_id,
-                "status": job.status,
-                "stage": job.stage,
-                "error_code": job.error_code,
-                "detail": job.detail,
-                "history": list(job.history),
-                "transport": job.transport,
-                "draft_version": job.draft_version,
-                "asset_manifest_version": job.asset_manifest_version,
-                "idempotency_key": job.idempotency_key,
-                "request_payload": dict(job.request_payload),
-                "verification": dict(job.verification),
-                "lease_owner": job.lease_owner,
-                "lease_expires_at": _iso(job.lease_expires_at),
-            }
+            return self._view(job)
+
+    @staticmethod
+    def _view(job: PublishJob) -> dict:
+        return {
+            "job_id": job.id, "draft_id": job.draft_id,
+            "status": job.status, "stage": job.stage, "error_code": job.error_code,
+            "detail": job.detail, "history": list(job.history),
+            "transport": job.transport, "draft_version": job.draft_version,
+            "asset_manifest_version": job.asset_manifest_version,
+            "idempotency_key": job.idempotency_key,
+            "request_payload": dict(job.request_payload), "verification": dict(job.verification),
+            "lease_owner": job.lease_owner, "lease_expires_at": _iso(job.lease_expires_at),
+        }

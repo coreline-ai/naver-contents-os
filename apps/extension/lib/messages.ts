@@ -37,6 +37,8 @@ export interface RecordPublishEventMessage {
   type: typeof MSG_RECORD_PUBLISH_EVENT;
   jobId: number;
   event: {
+    attempt_id: string;
+    lease_owner: string;
     stage: string;
     status: 'running' | 'passed' | 'failed';
     error_code?: string | null;

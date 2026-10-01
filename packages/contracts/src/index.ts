@@ -431,8 +431,19 @@ export interface PublishCommandAsset extends DraftAsset {
   native_path: string;
 }
 
+export interface PublishImageReceipt {
+  asset_id: number;
+  sha256: string;
+  remote_url: string;
+}
+
 export interface PublishCommand {
   job_id: number;
+  attempt_id: string;
+  lease_owner: string;
+  resume_stage: 'browser_attach' | 'reopen_verify';
+  asset_manifest_hash: string;
+  image_receipts?: PublishImageReceipt[];
   draft_id: number;
   draft_version: number;
   blog_id: string;
