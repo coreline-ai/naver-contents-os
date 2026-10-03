@@ -119,7 +119,7 @@ class PublishService:
         self._adapter_factory = adapter_factory
         self._runner_factory = runner_factory
         self._heartbeat_lock = Lock()
-        self._extension_heartbeat: dict = {}
+        self._extension_heartbeats: dict[str, dict] = {}
 
     def prepare(
         self,
@@ -130,9 +130,12 @@ class PublishService:
         cdp_url: str,
         expected_version: int | None = None,
         transport: str = "dedicated_chrome_cdp",
+        target_worker_id: str | None = None,
     ) -> PreparedPublish | None:
         if transport not in TRANSPORTS:
             raise ValueError("unsupported publisher transport")
+        if transport == "current_chrome_extension" and (not target_worker_id or not target_worker_id.strip() or len(target_worker_id) > 100):
+            raise PublishPreconditionError("target_worker_required", "현재 브라우저 확장 연결을 확인하고 다시 요청하세요.")
         draft = DraftService(self._sessions, None).get_draft(draft_id)
         if draft is None or not draft["versions"]:
             return None
@@ -168,6 +171,8 @@ class PublishService:
         existing = self._store.by_idempotency_key(idempotency_key)
         reused = existing is not None
         if existing is not None:
+            if transport == "current_chrome_extension" and existing["request_payload"].get("target_worker_id") != target_worker_id:
+                raise ValueError("기존 작업을 요청한 브라우저에서 재개하세요. 구형 작업은 먼저 저장 여부를 확인한 뒤 새 원고 버전으로 진행하세요.")
             job_id = existing["job_id"]
             if existing["status"] == "failed":
                 if transport == "current_chrome_extension":
@@ -181,6 +186,7 @@ class PublishService:
                 asset_manifest_version=manifest_version,
                 idempotency_key=idempotency_key,
                 request_payload={"blog_id": blog_id, "tags": normalized_tags,
+                                 "target_worker_id": target_worker_id,
                                  "asset_snapshot": snapshot, "asset_manifest_hash": manifest_hash,
                                  "resume_stage": "browser_attach"},
             )
@@ -259,6 +265,8 @@ class PublishService:
             raise ValueError("job does not use current Chrome extension transport")
         if not lease_owner:
             raise ValueError("extension lease owner is required")
+        if job["request_payload"].get("target_worker_id") != lease_owner:
+            raise ValueError("publish job belongs to another browser or requires an updated client")
         if job["status"] in TERMINAL_STATUSES:
             raise ValueError("terminal publish jobs cannot be claimed")
         assets = self._assert_assets(job)
@@ -301,7 +309,9 @@ class PublishService:
         # A browser profile may share the same extension id with another
         # profile. Only hand a job to a worker that reports an exact editor
         # blog id; legacy callers that report none must not steal the job.
-        job_id = self._store.next_available("current_chrome_extension", blog_ids)
+        if not blog_ids:
+            return None
+        job_id = self._store.next_available("current_chrome_extension", blog_ids, target_worker_id=lease_owner)
         if job_id is None:
             return None
         return self.command(job_id, lease_owner=lease_owner)
@@ -370,21 +380,29 @@ class PublishService:
         self._store.restart(job_id)
         return self._store.get(job_id)
 
-    def heartbeat(self, *, extension_id: str, version: str, active_url: str = "") -> dict:
+    def heartbeat(self, *, extension_id: str, version: str, active_url: str = "", protocol_version: int = 0, build_id: str = "") -> dict:
         with self._heartbeat_lock:
-            self._extension_heartbeat = {
+            now = datetime.now(timezone.utc)
+            self._extension_heartbeats = {key: value for key, value in self._extension_heartbeats.items()
+                                          if now - value["seen_at"] <= timedelta(seconds=60)}
+            if extension_id not in self._extension_heartbeats and len(self._extension_heartbeats) >= 100:
+                self._extension_heartbeats.pop(next(iter(self._extension_heartbeats)))
+            self._extension_heartbeats[extension_id] = {
                 "extension_id": extension_id[:100],
                 "version": version[:40],
                 "active_url": active_url[:1000],
-                "seen_at": datetime.now(timezone.utc),
+                "protocol_version": protocol_version,
+                "build_id": build_id[:100],
+                "seen_at": now,
             }
-        return self.readiness("")
+        return self.readiness("", target_worker_id=extension_id)
 
-    def readiness(self, cdp_url: str) -> dict:
+    def readiness(self, cdp_url: str, *, target_worker_id: str | None = None) -> dict:
         with self._heartbeat_lock:
-            heartbeat = dict(self._extension_heartbeat)
+            heartbeat = dict(self._extension_heartbeats.get(target_worker_id or "", {}))
         seen_at = heartbeat.pop("seen_at", None)
-        extension_ready = bool(seen_at and datetime.now(timezone.utc) - seen_at <= timedelta(seconds=20))
+        extension_ready = bool(seen_at and datetime.now(timezone.utc) - seen_at <= timedelta(seconds=20)
+                               and heartbeat.get("protocol_version") == 3 and heartbeat.get("build_id"))
         return {
             "current_chrome_extension": {
                 "ready": extension_ready,
@@ -392,7 +410,7 @@ class PublishService:
                 **heartbeat,
             },
             "dedicated_chrome_cdp": {
-                "ready": self._cdp_ready(cdp_url) if cdp_url else False,
+                "ready": self._cdp_ready(cdp_url) if cdp_url and not target_worker_id else False,
                 "url": cdp_url,
             },
         }

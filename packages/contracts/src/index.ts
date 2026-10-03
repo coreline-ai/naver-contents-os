@@ -3,6 +3,17 @@
 
 export type DataSource = 'SEARCH_AD' | 'NAVER_API_HUB' | 'BROWSER_DOM' | 'DERIVED';
 
+export const BROWSER_BRIDGE_PROTOCOL = 3;
+export const MSG_BROWSER_CONNECTION = 'NCOS_BROWSER_CONNECTION';
+export interface BrowserConnection {
+  ok: boolean;
+  worker_id: string;
+  protocol_version: number;
+  build_id: string;
+  debugger_available: boolean;
+  detail?: string;
+}
+
 export interface HealthResponse {
   status: 'ok';
   version: string;
@@ -212,7 +223,7 @@ export interface DraftVersion {
 }
 
 export type DraftUserStatus = 'editing' | 'review_ready' | 'archived';
-export type DraftDeliveryStatus = 'none' | 'pending' | 'draft_saved' | 'failed';
+export type DraftDeliveryStatus = 'none' | 'pending' | 'waiting_extension' | 'running' | 'draft_saved' | 'verified_draft_saved' | 'failed' | 'unknown';
 
 export interface DraftDetail {
   draft_id: number;
@@ -441,7 +452,7 @@ export interface PublishCommand {
   job_id: number;
   attempt_id: string;
   lease_owner: string;
-  resume_stage: 'browser_attach' | 'reopen_verify';
+  resume_stage: 'browser_attach' | 'upload_images' | 'input_tags' | 'reopen_verify';
   asset_manifest_hash: string;
   image_receipts?: PublishImageReceipt[];
   draft_id: number;
@@ -461,6 +472,8 @@ export interface PublisherReadiness {
     ready: boolean;
     last_seen: string | null;
     extension_id?: string;
+    protocol_version?: number;
+    build_id?: string;
     version?: string;
     active_url?: string;
   };

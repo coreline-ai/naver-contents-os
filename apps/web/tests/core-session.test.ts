@@ -4,6 +4,16 @@ import { sessionRequest } from '../src/session';
 
 afterEach(() => vi.unstubAllGlobals());
 describe('shared Core client authentication', () => {
+  it('fetches private image bytes using authenticated headers, never a token URL', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'image/png' } }));
+    vi.stubGlobal('fetch', fetch);
+    const result = await new CoreClient('', { kind: 'web-session' }).draftAssetContent(7, 2);
+    expect(result.size).toBe(3);
+    expect(fetch.mock.calls[0][0]).toBe('/v1/drafts/7/assets/2/content');
+    expect(fetch.mock.calls[0][1]).toMatchObject({ credentials: 'same-origin', headers: { 'X-NCOS-Web': '1' } });
+    await expect(new CoreClient('https://example.com', { kind: 'web-session' }).draftAssetContent(7, 2)).rejects.toMatchObject({ code: 'unsafe_origin' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('keeps extension token requests and uses cookies only for the same-origin web client', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response('{"status":"ok"}'));
     vi.stubGlobal('fetch', fetch);

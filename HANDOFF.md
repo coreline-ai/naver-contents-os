@@ -1,4 +1,131 @@
+## 최신 검수 — 2026-10-03 15:43 KST
+
+**가능한 비파괴 검수 완료. 자동713 PASS, 실 API·AI7 PASS/지역1 FAIL. 상태 표시·입력 접근성 오류 수정 반영.**
+
+- 실제 목록의 원고23/24가 검증 완료인데 처리 중으로 보이던 오류를 발견. 서버 read-model→HTTP/TS 계약→목록 UI를 함께 수정했고, 현재 ‘재열기 검증까지 완료’ 표시 확인. 구형 저장 응답/알 수 없는 상태도 성공으로 오인하지 않게 분리.
+- 이미지 업로드 입력의 접근성 이름 추가, 기존 사용권 승인 차단 유지. 상태UI8/HTTP8/파일입력1 회귀 추가.
+- 최종 `pnpm verify` **713 PASS** = Python377+Extension155+Web181, smoke8 제외. 타입/빌드/parity/compileall/격리migration/diff PASS. 신뢰할 최종 로그 `/tmp/ncos-qa-acceptance-713.log`; `/tmp/ncos-qa-final-verify.log`는 중간 혼재 로그이므로 최종 근거로 사용하지 말 것.
+- 실제 API smoke8: **7 PASS / 지역401 FAIL**, 원격 설정 변경 없음. 실제 테마·키보드·다섯 메뉴·키워드 하위4화면, 1366/768/390px 반응형 검수 PASS.
+- 원고24 복원4,135자/태그3/이미지3, 이전 이미지6개 해시 일치. 운영 DB24테이블 모든 행 hash 전후 동일, integrity ok, 공개 콘텐츠0, job9/10 verified_draft_saved 유지. 새 글 생성·네이버 입력/저장·공개 발행은 하지 않음.
+- 적용 서버PID30622 / revisiona442ba79256dd7eaf30b, 실제 확장 **0.2.0+f780cbe7e69b**. 웹 JS index-Iw7UE0-o.js. 서버 로그 `/tmp/ncos-qa-status-server.log`는 일회용 코드 출력 금지. SQLite 백업 `ncos-before-qa-ui-20261003-153737.db`, `ncos-before-qa-status-20261003-154109.db`.
+- Ego 공간19는 finish({keep:["p1"]}) 성공, 앱 결과 유지·진단 탭 정리. NAVER 원고 탭은 사용자 소유/untracked 그대로 건드리지 않고 보존. 검수 전 시스템 테마로 복원. 프로필·다른 브라우저 전환 없음.
+- **잔여:** 지역API 외부 권한, 설정 경로 새로고침 후 활성 원고 선택 복원(목록에서 재열기는 정상), 저장 ACK 미확정의 자동 재열기 UX, 이미지 조판/검수·재정렬·교체, P2 현재페이지 웹 연결, P3 격리 데모. Phase3/P1 전체 완료 아님.
+- 상세: `docs/21_test_report_20261003.md`, 기존 계획 Phase3 검수 기록, 비공개 `data/live-acceptance/qa-20261003/`. main/98f06a7+미커밋. 커밋·푸시 없음.
+
+아래는 과거 시점 기록이다.
+
+## 최신 결과 — 2026-10-03 15:26 KST 새 원고 품질 보완 저장 성공
+
+**Phase2/P0-B 인수 완료. 원고24/job10의 앱 단독 저장·재열기 검증 성공. 최초 원샷 성공이나 P0~P3 전체 완료는 아님.**
+
+- antifreeid / 원고24 v1: ‘스마트폰 알림 정리로 집중 방해 줄이는 방법, 준비부터 실행까지’. 앱 생성4,135자, 저장본4,123자(정규화 hash 일치), 원문26문단 보존. 문단8·14·20의 발췌 카드3장과 태그3개 검증. 사진·AI 일러스트가 아닌 본문 텍스트 카드다.
+- job10 `verified_draft_saved` at15:26:16 KST. 오류 수정 후5 attempt, 제목/본문/업로드/태그 passed 각1회. 최종은 저장 ACK 미확정에 대한 **재열기 전용** 복구이며 중복 입력/재업로드/공개 발행 없음. 기존 job9 전체 열은 백업과 동일, 공개 콘텐츠0/DB integrity ok.
+- 수정: native 글리프 가장자리 클릭 후 문단 경계 ACK; async ACK·DOM 재생성 대응; 서버/계약/확장에 `upload_images` checkpoint 추가. 기존 본문 hash·전체 문단 구조·이미지0·비텍스트/발행창 없음 확인 후만 이어감. 부분 이미지 복구는 여전히 임의 삭제하지 않고 차단.
+- **696 PASS** = Python369 / Extension155 / Web172. smoke8 제외. 타입·빌드·parity·compileall·임시 DB migration·diff check 통과. 로그 `/tmp/ncos-glyph-final-verify.log`.
+- 실제 적용 확장 **0.2.0+4eafe537455d**. 실행 서버PID65657 / revision137a69321959b28f4e7b, 현재 소스·웹 번들과 일치. 서버 로그 `/tmp/ncos-image-resume-server.log`는 연결 코드가 있어 전체 출력 금지.
+- Ego 공간19는 `finish({keep:["p1","p2"]})` 성공. 앱·NAVER 결과 탭은 유지, 진단 관리 탭 정리. 관리 탭 p4 응답 장애는 agent 탭만 같은 공간에서 재생성(p5)하여 해결. 새 공간·프로필·다른 브라우저 우회 없음. 최초 NAVER 캡처 timeout 후 같은 탭 전면 표시로 재캡처 성공. 후속 브라우저 작업은 명시적 계속 요청 후 같은 공간을 재개한다.
+- 비공개 증거: `data/live-acceptance/quality-20261003/job10-verified-summary.json`, `app-job10-verified.png`, `naver-job10-card1.png`. 카드3장 로컬 렌더/원문 의미 검수와 실제 DOM 이미지3개 로딩 확인 완료. 근거와 계정 원본은 Git 제외.
+- **다음은 기존 계획 Phase3/P1:** 한 화면 단계/경과·복구 안내, 이미지 재정렬·문단 위치·교체·검수 승인. 저장 ACK 미확정 시 재열기를 자동 연결할지 명시적 checkpoint 계약과 함께 보완해야 하며 성공 이벤트 위조/본문 재입력 금지. 긴 카드 제목 마지막 한 글자 고립도 조판 개선 과제. 이후 P2 자료/최신 키워드 → P3 격리 데모·종합 인수 순서.
+- 지역 API는 원격 Application 활성화 필요 상태 그대로(이번에 재호출하지 않음). `LESSON_CORPUS_INVALID / LESSON_PROMOTION_BLOCKED` 유지, 구현 차단 아님. main/98f06a7+미커밋, 커밋/푸시 없음.
+
+아래 내용은 과거 시점 기록이다.
+
+## 최신 상태 — 2026-10-03 14:56 KST 이미지·문단·태그 보완
+
+**코드/자동 검증 완료, 웹 서버 반영. Ego 화면 및 새 실계정 저장 재검수는 대기.**
+
+- 일반 선물/집 장식 그림을 저장된 원고의 실제 문단 발췌 카드로 교체. Pillow12.3.0 + 시스템 한글 글꼴 사용. 외부 AI 이미지 호출/사진 복제/글꼴 재배포 없음. 원문 부족/글꼴 부재는 오류 안내. 기존 자산은 자동 교체하지 않음.
+- 웹 이미지 미리보기(인증된 blob, 해제/실패 처리)와 원문 삽입 문단 표시. CSP는 img-src에만 blob 허용, script/style 규칙 유지. 미저장 내용으로 카드 생성 금지.
+- 이미지 삽입은 native 방향키로 문단 시작/끝에 이동한 뒤 읽기 전용 ACK. 삽입 전후·저장본 재열기에서 문단 분리/변경 차단. 이 변경의 실제 SmartEditor 인수는 아직 실행하지 않음.
+- 수동 태그를 원고 ID+생성 시각으로 브라우저 설정에 보존. 빈 태그, 다른 원고 격리, 늦은 응답, 기존 검증 성공 기록의 태그 복원 회귀 추가.
+- 최종 `pnpm verify` **683 PASS**(Python367 / 확장144 / 웹172), smoke8 제외. 타입·빌드·parity·compileall·임시 DB migration PASS. 한글 카드 PNG 시각 확인 완료(합성 검수 자료, 네이버 글 저장 증거 아님).
+- 웹 서버 PID26312 / revision846a0f0edf2e76049e30. 앱HTTP200, 비인증 이미지401, 없는 파일404, CSP/버전 일치 확인. 백업과 원고23 버전/이미지 및 job9 모든 열 동일, DB integrity ok, 공개 콘텐츠0. 신규 job/네이버 저장 없음.
+- 확장 **빌드** `0.2.0+1e17fc417461`; **브라우저 재적용 확인 전**. 마지막 실제 적용 확인은 `0.2.0+2132155b2a7b`. 둘을 혼동하지 말 것.
+- Ego 공간19 재개 시 사용자 제어로 인한 hard stop 응답. 우회/재시도/새 공간 생성 없음. 사용자에게 같은 공간 재검수 승인 질문 전송, 응답 대기. 명시적 계속 응답 이후에만 문서화된 `claimTaskSpace(19)`로 재개. 앱p1·기존 NAVERp3 보존, 기존 글 덮어쓰기 금지.
+- 다음 순서: Ego에서 빌드 재적용·미리보기/태그 복원 검수 → 새 원고 버전의 이미지 의미/본문 표현 교정 → 앱 단독 새 임시저장 인수. Phase2/P0B-2는 미완료이며 P1~P3로 건너뛰지 않음.
+- 근거: `/tmp/ncos-quality-final-verify.log`, Git 제외 `data/live-acceptance/quality-20261003/`. 서버 로그 `/tmp/ncos-quality-server.log`에는 연결 코드가 있어 전체 출력 금지. 백업 `data/backups/ncos-before-quality-20261003-145425.db` 및 실행기 추가 백업.
+- `LESSON_CORPUS_INVALID / LESSON_PROMOTION_BLOCKED` 유지. 구현 자체 차단 아님. Git main/98f06a7 + 미커밋, 커밋/푸시 없음.
+
+아래는 과거 시점 기록이다.
+
+## 최신 결과 — 2026-10-03 14:40:44 KST
+
+**antifreeid 대상 앱 저장·재열기 기술 인수 1건 성공. 발행용 콘텐츠 품질은 미완료.**
+
+- 원고23/v1, job9: `verified_draft_saved`. 앱 원고4,039자 → 저장본 관측4,029자, 정규화 제목/본문hash 일치. 네이버 원격 이미지3장·태그3개 일치. 실제 저장본을 새 탭에서 재열고 확인했다.
+- 첫 시도 성공이 아니라 실제 오류 수정·같은 작업 재시도/체크포인트 복구 후 성공이다. 제목/본문/이미지/태그 입력·저장·재열기는 개발 앱/확장이 수행. Ego는 앱 실행·관찰·진단용 패널 탐색만 사용. 공개 발행 없음(공개 콘텐츠0).
+- 적용 확장 `0.2.0+2132155b2a7b`. 서버PID55619/revision985b6eee19db80597e7e. DB integrity ok. Git main/98f06a7+미커밋 수정, 푸시 없음.
+- 최종 verify **666 PASS**(Python362/확장139/웹165), smoke8 제외. 타입·빌드·parity·compileall·임시 DB migration·diff PASS. 검수 로그 `/tmp/ncos-ego-live-final2-verify.log`.
+- 기술 수정: class canvas 인식, 앱 sender 창 고정·복수 후보 차단, Enter 문단 입력, 태그 aria-label·빈 input Backspace 방지, input_tags 무재입력 재개, 고유 저장 목록 항목·늦은 복구 팝업 처리, 화면 밖 이미지 실제 로딩 후 검증.
+- **다음 작업**: 기본 안내 그림이 스마트폰 백업과 무관한 선물 상자 등이며 원고 설명과 맞지 않음. 주제별 이미지 의미 일치·발행 전 편집 품질/문단 끝 배치 검수 필요. 앱 새로고침 시 태그 입력이 기본값으로 돌아가는 UX도 남음. 기술적 1건 성공으로 P0B-2/Phase2 전체를 완료 처리하지 않았다. P1~P3 전체 완료 아님.
+- Git 제외 근거 `data/live-acceptance/antifreeid-20261003/`. 원고 전체·계정 비밀값·원격 이미지 원주소는 공개 문서에 복사하지 않는다. 서버 로그에는 일회용 코드가 있어 전체 출력 금지.
+- Ego 공간19: 앱p1·네이버원고p3는 보존, 작업용 검사 탭p2/p4/p5 정리 후 finish. 다른 창의 이전 부분 입력(tab855527171)은 임의 삭제하지 않았으므로 남아 있을 수 있다.
+- 아래는 앞선 시점의 중간 기록이다. 최신 결과와 혼동하지 않는다.
+
+## 최신 재개 상태 — 2026-10-03 14:33 KST (앱 실제 인수 진행 중)
+
+- 사용자 새 대상은 **antifreeid / categoryNo=0**. Ego 공간19의 로그인·빈 편집기 확인 후 앱으로 원고23 v1(4,039자)과 안내 이미지7~9 3장 생성. 기존 sence4u가 아님.
+- Job9 실제 실행: canvas selector 누락 → 다른 창 같은 URL 선택/단일 문단 입력 → 태그 chip 검증 실패 순으로 진단·수정. 제목/본문·원격 이미지3장 및 배치는 통과했으나 아직 임시저장/재열기 성공 아님.
+- 검수 p3(tab855527167)에 원고+이미지 보존. 다른 창의 tab855527171에도 두 번째 시도 텍스트가 남아 있을 수 있으며 임의 삭제/저장하지 않았다. sender.windowId 한정 선택, 복수 후보 polling 차단 적용.
+- 태그 실패 후 원고 재입력 금지: backend/계약에 input_tags checkpoint 추가. 제목/본문hash·원격 이미지 identity/순서/배치 대조 후 태그부터 재개. 태그 aria-label 읽기·빈 input Backspace 제거·기존 예상 밖 태그 보호.
+- 전체 verify **663 PASS**(Python362/확장136/웹165), smoke8 제외; 타입·빌드·parity·compile·임시DB migration PASS. `/tmp/ncos-ego-live-verify.log`. shell 후처리 `status` 변수 오류는 검증 종료 후 발생했고 로그에 최종 PASS 확인.
+- 서버 source 반영 정상 재시작 PID55619, revision985b6eee19db80597e7e. 백업 `data/backups/ncos-before-web-20261003-143249-665836.db` 생성. 로그 `/tmp/ncos-ego-live-server.log`에는 일회용 코드가 있으므로 전체 출력 금지.
+- 확장 빌드 d5710874647c를 같은 공간에 reload. p1 앱 원고23에서 태그3개 유지 후 재개 확인 중. 성공 판정은 Job9 verified_draft_saved와 실제 재열기 대조 이후에만.
+- 이미지 품질: 앱 기본 guide 그림은 주제별 AI 생성이 아닌 일반 도식이다. P1 의미 일치 검수는 미완료. 공개 발행/커밋/푸시 없음.
+- 아래 내용은 과거 시점 기록이다.
+
 # HANDOFF — Naver Content OS
+
+## 최신 상태 — 2026-10-03 14:12 KST 로그인 완료 응답 후 Ego 제어 시간 초과
+
+- 사용자가 ‘로그인 완료’라고 확인하여 `takeOverTaskSpace(19)`로 같은 공간을 재개했다. 최초 관찰에는 이전 NAVER 로그인 페이지가 남아 있어 승인된 글쓰기 URL로 한 번 이동했다.
+- 이후 탭 목록에서 p3가 `https://blog.naver.com/sence4u?Redirect=Write&categoryNo=1` 및 블로그 제목으로 바뀐 것을 확인했다. **편집기 DOM·대상 로그인 계정·빈 원고까지는 검증하지 못했다.** 사용자 로그인 완료 응답을 무시하거나 로그인 실패로 단정하지 않는다.
+- 제어 요청이 순차적으로 `Page.getFrameTree`, `Target.getTargets`, `Runtime.evaluate`에서 timeout. 이동을 반복하거나 새 공간/다른 브라우저/프로필·쿠키 우회로 전환하지 않았다. 앱 publisher 오류로 확정할 증거는 없다.
+- 공간19를 `handOff()`하여 사용자에게 반환했다. **사용자에게 같은 Ego 네이버 탭 새로고침 후 글쓰기/로그인/응답 없음 상태를 확인 요청한 상황**이다. 응답 전 브라우저 제어권 회수 금지.
+- 새 원고 생성·이미지 생성·네이버 입력/저장 시작 없음. DB 읽기 결과 원고22, 저장 작업 구형저장1/실패7/엄격검증저장0 유지. 앱 서버 PID11349 listener 유지. 코드/설정/서버 재시작·커밋·푸시 없음.
+- 증거 요약: Git 제외 `data/live-acceptance/ego-control-timeout-20261003.json`. 다음은 같은 공간19의 제어 복구와 로그인/빈 편집기 확인부터이며, 이번에 자동 테스트를 재실행한 것은 아니다.
+
+## 최신 재개 지점 — 2026-10-03 13:58 KST 잔여 P0 보완
+
+- 사용자 ‘남은 항목 진행’에 따라 P0A-T1 장애 검증 보완. 서버 중지/포트 충돌/비정상 응답/시작 실패·종료·백업10건, 연결 만료/복구·저장 직전 확장 소실/worker 변경5건 추가.
+- 실행기 버그 수정: 버전 응답이 null/배열/문자열이면 `AttributeError`로 죽던 문제를 객체 형식 검사로 거부. 수정 전3 FAIL → 실행기13 PASS. 제품 변경은 `scripts/start_web_app.py` 2줄이며 운영 서버 코드/확장 소스 변경 없음.
+- **전체652 PASS**(Python361 / Extension126 / Web165), smoke8 제외. 타입·빌드·compileall·격리 migration·parity 통과. 별도 임시 HTTP 서버+실제 실행기 subprocess 장애검수4건도 PASS, 임시 서버 정리 완료.
+- 기존 실호출7 PASS/지역1 FAIL은 직전 검수 결과이며 이번에는 외부 API를 재호출하지 않았다. 지역 API Application 미활성화 상태의 해결 증거 없음.
+- Ego 공간19 목록의 제어권은 `agentDelegatedToUser`. 목록만 읽었고 공간 회수·페이지 조작 없음. **사용자 네이버 로그인 완료 응답 대기**. 완료 시 같은 공간19에서 대상 블로그·빈 편집기 확인 후 앱 UI로 3,000자/이미지3장 임시저장·재열기 인수. 아직 `verified_draft_saved`0이며 P1~P3 진입하지 않음.
+- 근거: Git 제외 `data/live-acceptance/p0-remaining-20261003/`. [갱신된 보고서](docs/21_test_report_20261003.md)·[기존 계획](dev-plan/implement_20261003_131549.md). 운영 서버 재시작·커밋·푸시 없음.
+
+## 최신 테스트 — 2026-10-03, 로그인 대기 유지
+
+- 사용자 요청으로 가능한 테스트 직접 실행. 전체 자동 **637 PASS**(Python351/Extension126/Web160), publisher 부분집합138 PASS, performance 부분집합94 PASS. 타입·빌드·compileall·격리 migration·parity·diff 통과.
+- 실제 API·AI smoke **7 PASS / 1 FAIL**. 지역 `/search/v1/local` HTTP401 응답: **요청한 API는 이 Application에서 활성화되어 있지 않습니다.** 해당 Application의 지역 API 활성화 후 재검사 필요. 다른 검색/추이/연관어/이미지/뉴스/쇼핑/AI 단문은 통과. 실패를 skip 처리하지 않았다.
+- 지역·이미지·뉴스·쇼핑 smoke4 추가, HUB fixture에서 Settings의 비밀값이 traceback 인자로 출력되지 않도록 client 반환으로 보강. 기본 verify에서는 smoke8 제외. 최종 로그/XML 자격 증명 값 부재 확인.
+- 로컬 서버 HTTP17개 점검 통과, revision·빌드 바이트 일치. 운영 DB integrity ok·24개 테이블 행 수 전후 동일. 엄격한 실제 저장 이력0 유지.
+- **이번 브라우저 제어 없음.** Ego TaskSpace19는 사용자 네이버 로그인용 handOff 유지. 로그인 완료 응답 전에는 재개하지 않는다. 새 원고·네이버 저장·공개 발행 없음, P0 실계정/P1~P3 상태 변경 없음.
+- [상세 검수 보고서](docs/21_test_report_20261003.md), Git 제외 근거 `data/live-acceptance/test-20261003/`. 서버 재시작·계정 설정 변경·커밋·푸시 없음. 아래는 앞선 시점 기록이다.
+
+## 최신 재개 상태 — Ego 설치·연결 확인 후 로그인 대기
+
+- 사용자 ‘설치 완료’ 이후 같은 TaskSpace19를 재개해 최신 확장 build `0.2.0+bbaf531f0010` 활성화를 확인했다.
+- p1 로컬 웹앱 페어링, p2 확장 Local Core 설정, 동일 브라우저 연결·AI 준비 상태 확인 완료. 자격 증명 원문은 기록하지 않음.
+- 격리 fixture 탭에서 debugger attach/detach·문자 입력·실제 파일 입력·iframe 접근 PASS. fixture 탭 제거 완료. 실제 네이버 글 입력은 아님.
+- p3 네이버 글쓰기 진입이 로그인으로 이동하여 사용자에게 handOff했다. **사용자 네이버 로그인 완료 응답 전에는 공간 제어권을 다시 가져오지 않는다.** 비밀번호/OTP는 요청하지 않는다.
+- 환경 검수 요약은 Git 제외 `data/live-acceptance/ego-p0-environment-20261003.json`. 로그인 완료 후 같은 공간19/p3에서 대상 블로그·빈 편집기를 확인하고 앱 UI로 생성·저장·재열기 검증을 이어간다.
+- 새 원고/저장 작업은 생성하지 않았다. P0 실계정 저장·P1~P3는 계속 미완료. 아래 내용은 앞선 구현 시점의 기록이다.
+
+## 현재 재개 지점 — 2026-10-03 Ego P0
+
+- 기준 커밋: `main / 98f06a7` + 이번 미커밋 변경. 새 계획: [Ego P0~P3](dev-plan/implement_20261003_131549.md).
+- P0 동일 브라우저 연결·대상 worker 고정·구형 무대상 작업 차단·build/protocol 진단 구현. 웹/확장 요청 및 backend/SQLite claim에 반영했다.
+- 전체 `pnpm verify` **637 PASS**(Python351/Extension126/Web160), smoke4 제외. 양쪽 타입·빌드/격리 migration/parity/diff 검사 통과. 새 schema migration 없음.
+- 앱 서버 실행 및 HTTP200/revision/DB 보존 확인. 확장 파일은 `apps/extension/dist/chrome-mv3`, build `0.2.0+bbaf531f0010`.
+- **Ego 실제 설치·로그인·앱 단독 저장 인수 미완료.** TaskSpace19/p1의 확장 로드를 눌렀으나 네이티브 폴더 선택을 자동화할 수 없어 사용자에게 handOff했다. 사용자 확인 전 제어권을 되찾지 않는다.
+- 사용자 설치 완료 후 같은 공간19를 재개한다. 확장 설치 build → 앱 페어링 → 확장 로컬 인증 → 비파괴 호환성 → Phase2 실제 저장 순서. 연결 코드 만료 시 `--pair-only --no-open`으로 새 발급하고 비밀값을 출력/문서/Git에 남기지 않는다.
+- 운영 이력은 `draft_saved`1 / failed7 / `verified_draft_saved`0. 네이버 입력·AI 생성·공개 발행 없음. **선행 gate 때문에 P0-B/P1~P3 미착수**.
+- 검증 로그: `/tmp/ncos-p0-final-verify.log`. 서버 로그에는 일회용 코드가 포함되므로 전체 출력하지 않는다.
+- 커밋·푸시 없음. 아래 기록은 과거 시점의 상태이며 현재 실행·완료 증거로 사용하지 않는다.
+
+## 2026-10-01 구현 당시 메타데이터 (이력)
+
 
 - 갱신 시각: `2026-10-01 21:58 KST`
 - 저장소: `coreline-ai/naver-contents-os`

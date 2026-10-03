@@ -51,6 +51,23 @@ it('can archive and restore publication records without deleting an external pos
   await click('공개 기록 보관'); expect(client.updatePublishedContent).toHaveBeenCalledWith(4, { archived: true });
   await click('공개 기록 복원'); expect(client.updatePublishedContent).toHaveBeenCalledWith(4, { archived: false });
 });
+it.each([
+  ['none', '요청 기록 없음'],
+  ['pending', '요청 대기'],
+  ['waiting_extension', '확장 연결 대기'],
+  ['running', '처리 중'],
+  ['failed', '실패'],
+  ['draft_saved', '구형 저장 응답 · 재열기 미검증'],
+  ['verified_draft_saved', '재열기 검증까지 완료'],
+  ['unknown_future_status', '상태 확인 필요'],
+])('accurately labels library publisher status %s without changing or retrying the job', async (status, label) => {
+  const item = { draft_id: 7, title: '상태 표시 검수', keyword: '검수', latest_version: 1, user_status: 'editing', latest_job_status: status };
+  const client = { listDrafts: vi.fn().mockResolvedValue({ items: [item] }), startPublishJob: vi.fn(), updateDraftStatus: vi.fn() };
+  await render(<DraftLibrary client={client as unknown as CoreClient} onOpen={vi.fn()}/>);
+  expect(host.querySelector('.record-main')!.textContent).toContain(`네이버 임시저장: ${label}`);
+  expect(client.startPublishJob).not.toHaveBeenCalled();
+  expect(client.updateDraftStatus).not.toHaveBeenCalled();
+});
 it('opens ad-specific work in the ad tab even when its action is open_performance', async()=>{
   const ad=vi.fn(), general=vi.fn();
   const client={todayWork:vi.fn().mockResolvedValue({items:[{id:'ad:1',source_type:'ad_performance',action:'open_performance',title:'광고 공백',keyword:'여행'}]})};

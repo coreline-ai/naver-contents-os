@@ -462,11 +462,11 @@ class DraftService:
         def delivery_status(job: PublishJob | None) -> str:
             if job is None:
                 return "none"
-            if job.status in {"pending", "running"}:
-                return "pending"
-            if job.status in {"draft_saved", "failed"}:
+            # Preserve delivery states in the list read-model. In particular,
+            # a strictly verified saved draft must not become "pending" again.
+            if job.status in {"pending", "waiting_extension", "running", "draft_saved", "verified_draft_saved", "failed"}:
                 return job.status
-            return "pending"
+            return "unknown"
 
         items = [
             {
@@ -562,9 +562,11 @@ class SqlJobStore:
         with self._sessions() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             if idempotency_key:
-                existing = session.scalar(select(PublishJob.id).where(PublishJob.idempotency_key == idempotency_key))
+                existing = session.scalar(select(PublishJob).where(PublishJob.idempotency_key == idempotency_key))
                 if existing is not None:
-                    return existing
+                    if transport == "current_chrome_extension" and (existing.request_payload or {}).get("target_worker_id") != (request_payload or {}).get("target_worker_id"):
+                        raise DraftVersionConflict("기존 작업을 요청한 브라우저에서 재개하세요.")
+                    return existing.id
             if transport == "current_chrome_extension":
                 snapshot = (request_payload or {}).get("asset_snapshot")
                 if snapshot is None:
@@ -629,6 +631,12 @@ class SqlJobStore:
             payload = dict(job.request_payload or {})
             passed = payload.get("passed_stages", [])
             resume_stage = "reopen_verify" if job.stage in {"draft_save", "reopen_verify"} or "draft_save" in passed else "browser_attach"
+            if resume_stage == "browser_attach" and ("upload_images" in passed or payload.get("resume_stage") == "input_tags") and (job.verification or {}).get("image_receipts"):
+                resume_stage = "input_tags"
+            if resume_stage == "browser_attach" and job.transport == "current_chrome_extension" and ("input_body" in passed or payload.get("resume_stage") == "upload_images"):
+                # The extension must revalidate the pinned text and zero images.
+                # Never restart title/body entry over an already-filled editor.
+                resume_stage = "upload_images"
             payload.update(resume_stage=resume_stage, attempt_id=None, passed_stages=[])
             job.request_payload = payload
             entry = {
@@ -640,7 +648,7 @@ class SqlJobStore:
             job.stage = resume_stage
             job.error_code = None
             job.detail = "waiting to resume saved-draft verification" if resume_stage == "reopen_verify" else "waiting for publisher transport"
-            if resume_stage != "reopen_verify":
+            if resume_stage == "browser_attach":
                 job.verification = {}
             job.lease_owner = None
             job.lease_expires_at = None
@@ -653,6 +661,10 @@ class SqlJobStore:
         now = datetime.now(timezone.utc)
         with self._sessions() as session:
             session.execute(text("BEGIN IMMEDIATE"))
+            candidate = session.get(PublishJob, job_id)
+            if candidate is None or (candidate.transport == "current_chrome_extension"
+                                     and (candidate.request_payload or {}).get("target_worker_id") != owner):
+                return False
             claimed = session.execute(
                 update(PublishJob).where(
                     PublishJob.id == job_id,
@@ -714,10 +726,16 @@ class SqlJobStore:
                 raise ValueError("publisher attempt or lease is stale")
             if job.status in {"failed", "draft_saved", "verified_draft_saved"}:
                 raise ValueError("terminal publish jobs do not accept extension events")
-            sequence = ("reopen_verify",) if payload.get("resume_stage") == "reopen_verify" else stages
+            resume_stage = payload.get("resume_stage")
+            resume_sequences = {
+                "reopen_verify": ("reopen_verify",),
+                "input_tags": ("input_tags", "draft_save", "reopen_verify"),
+                "upload_images": ("upload_images", "input_tags", "draft_save", "reopen_verify"),
+            }
+            sequence = resume_sequences.get(resume_stage, stages)
             passed = list(payload.get("passed_stages", []))
             next_stage = sequence[len(passed)] if len(passed) < len(sequence) else None
-            optional_attach = payload.get("resume_stage") == "reopen_verify" and stage == "browser_attach" and not passed
+            optional_attach = resume_stage in resume_sequences and stage == "browser_attach" and not passed
             uncertain_ack = status == "failed" and passed and passed[-1] == stage and job.stage == stage
             if stage != next_stage and not optional_attach and not uncertain_ack:
                 raise ValueError("publisher stage transition is not allowed")
@@ -775,7 +793,7 @@ class SqlJobStore:
             session.commit()
             return len(jobs)
 
-    def next_available(self, transport: str, blog_ids: list[str] | None = None) -> int | None:
+    def next_available(self, transport: str, blog_ids: list[str] | None = None, *, target_worker_id: str | None = None) -> int | None:
         self.expire_leases()
         now = datetime.now(timezone.utc)
         eligible = {value.strip().casefold() for value in (blog_ids or []) if value.strip()}
@@ -786,7 +804,8 @@ class SqlJobStore:
                 select(PublishJob).where(
                     PublishJob.transport == transport,
                     PublishJob.status.in_(("pending", "waiting_extension")),
-                ).order_by(PublishJob.id).limit(20)
+                ).where(PublishJob.request_payload["target_worker_id"].as_string() == target_worker_id)
+                .order_by(PublishJob.id).limit(20)
             ).all()
             for job in jobs:
                 requested_blog = str((job.request_payload or {}).get("blog_id") or "").strip().casefold()

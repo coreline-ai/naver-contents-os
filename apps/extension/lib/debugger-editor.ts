@@ -56,7 +56,7 @@ const SELECTORS = {
   // Only the explicit toolbar opener. Final publish controls may share CSS classes.
   publishButton: ['button[data-click-area="tpb.publish"]'],
   tagInput: ['#tag-input', 'input.tag_input', '.tag_area input'],
-  tagChip: ['.tag_area .tag', '.tag_area [class*="tag_item"]', '[class*="tag_list"] [class*="tag_item"]', '[data-tag]'],
+  tagChip: ['[id^="tag-item-"][aria-label]', '.tag_area .tag', '.tag_area [class*="tag_item"]', '[class*="tag_list"] [class*="tag_item"]', '[data-tag]'],
   saveSuccess: ['span[class^="autosave_message__"][class*="is_show__"]', '[class*="save_complete"]'],
   saveButton: [
     'button.save_btn__bzc5B',
@@ -71,8 +71,13 @@ const SELECTORS = {
     'button[class^="save_count_btn__"]',
     'button[class*=" save_count_btn__"]',
   ],
+  savedDraftItem: ['button[data-click-area="tpb*s.tlist"]'],
   closeHelp: ['button.se-help-panel-close-button', '.se-popup-button-cancel', 'button[data-name="close"]'],
 } as const;
+
+// Current SmartEditor uses a class-based canvas; older editor variants used
+// #SE-canvas / .se-main-container. Share this scope for reads and image anchors.
+const EDITOR_ROOT_SELECTOR = '.se-main-container, #SE-canvas, .se-canvas';
 
 export class DebuggerEditorError extends Error {
   constructor(public stage: string, public code: string, message: string) {
@@ -159,7 +164,7 @@ export class DebuggerSmartEditor {
 
   private elementExpression(
     selectors: readonly string[],
-    options: { focus?: boolean; selectContents?: boolean; textIncludes?: string; closestClickable?: boolean } = {},
+    options: { focus?: boolean; selectContents?: boolean; textIncludes?: string; closestClickable?: boolean; unique?: boolean } = {},
   ): string {
     return `(() => {
       const selectors = ${JSON.stringify(selectors)};
@@ -192,8 +197,10 @@ export class DebuggerSmartEditor {
         } else {
           candidates = [...root.doc.querySelectorAll('button,a,[role="button"],li')];
         }
-        let element = candidates.find((candidate) => visible(candidate)
+        const matching = [...new Set(candidates)].filter((candidate) => visible(candidate)
           && (!textIncludes || (candidate.innerText || candidate.textContent || '').replace(/\\s+/g, ' ').includes(textIncludes)));
+        if (${Boolean(options.unique)} && matching.length > 1) return null;
+        let element = matching[0];
         if (!element) continue;
         if (${Boolean(options.closestClickable)}) {
           element = element.closest('button,a,[role="button"],li') || element;
@@ -235,7 +242,7 @@ export class DebuggerSmartEditor {
     stage: string,
     code: string,
     message: string,
-    options: { focus?: boolean; selectContents?: boolean; textIncludes?: string; closestClickable?: boolean } = {},
+    options: { focus?: boolean; selectContents?: boolean; textIncludes?: string; closestClickable?: boolean; unique?: boolean } = {},
     timeoutMs = 15_000,
   ): Promise<ElementInfo> {
     const started = Date.now();
@@ -258,23 +265,31 @@ export class DebuggerSmartEditor {
     stage: string,
     code: string,
     message: string,
-    options: { textIncludes?: string; closestClickable?: boolean } = {},
+    options: { textIncludes?: string; closestClickable?: boolean; unique?: boolean } = {},
     timeoutMs = 15_000,
   ): Promise<void> {
     await this.clickPoint(await this.locate(selectors, stage, code, message, options, timeoutMs));
   }
 
-  private async selectAllAndInsert(value: string): Promise<void> {
+  private async selectAllAndInsert(value: string, paragraphBreaks = false, clearSelected = true): Promise<void> {
     // locate(..., selectContents: true) already scopes the selection to the
     // requested title/body node. Meta+A would expand it to the whole editor
     // document and can erase the title while replacing the body.
-    await this.send('Input.dispatchKeyEvent', {
-      type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
-    });
-    await this.send('Input.dispatchKeyEvent', {
-      type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
-    });
-    await this.send('Input.insertText', { text: value });
+    if (clearSelected) {
+      await this.send('Input.dispatchKeyEvent', {
+        type: 'rawKeyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+      });
+      await this.send('Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+      });
+    }
+    // SmartEditor treats a multiline insertText payload as one paragraph.
+    // Native Enter events create actual editor paragraphs for image anchors.
+    const lines = paragraphBreaks ? value.replace(/\r\n?/g, '\n').split('\n') : [value];
+    for (let index = 0; index < lines.length; index++) {
+      if (index) await this.pressKey('Enter', 'Enter', 13);
+      if (lines[index]) await this.send('Input.insertText', { text: lines[index] });
+    }
   }
 
   private async readText(selectors: readonly string[]): Promise<string> {
@@ -314,12 +329,18 @@ export class DebuggerSmartEditor {
     if (!clicked.caret_ack) throw new DebuggerEditorError(stage, 'input_caret_unconfirmed', '실제 클릭 후 입력 커서를 확인하지 못했습니다.');
     const focused = await this.locate(selectors, stage, code, message, { focus: true, selectContents: true });
     if (!focused.caret_ack) throw new DebuggerEditorError(stage, 'input_caret_unconfirmed', '입력 위치를 확인하지 못해 원고 변경을 중단했습니다.');
-    await this.selectAllAndInsert(value);
+    // Backspace in an empty tag input removes the previous chip. Native
+    // insertText already replaces a selected INPUT/TEXTAREA value safely.
+    await this.selectAllAndInsert(value, stage === 'input_body', !/^(INPUT|TEXTAREA)$/.test(focused.tag));
     const expected = normalize(value);
     const started = Date.now();
+    let matched = false;
     while (Date.now() - started < 3_000) {
       const actual = stage === 'input_body' ? (await this.editorState()).body : await this.readText(selectors);
-      if (normalize(actual) === expected) return;
+      if (normalize(actual) === expected) {
+        if (matched) return;
+        matched = true;
+      } else matched = false;
       await sleep(200);
     }
     throw new DebuggerEditorError(stage, 'input_readback_mismatch', '자동 입력한 내용과 편집기 내용이 달라 다음 단계를 중단했습니다.');
@@ -391,17 +412,17 @@ export class DebuggerSmartEditor {
 
   private async placeImageCaret(anchorAfter: number): Promise<void> {
     const selectors = SELECTORS.body;
-    const point = await this.evaluate<ElementInfo | null>(`(() => {
+    const point = await this.evaluate<(ElementInfo & { paragraphCount: number }) | null>(`(() => {
       const docs = [document];
       for (let i = 0; i < docs.length; i++) for (const frame of docs[i].querySelectorAll('iframe')) {
         try { if (frame.contentDocument && !docs.includes(frame.contentDocument)) docs.push(frame.contentDocument); } catch (_) {}
       }
       for (const doc of docs) {
-        const roots = [...doc.querySelectorAll('.se-main-container, #SE-canvas')].filter(root => {
+        const roots = [...doc.querySelectorAll(${JSON.stringify(EDITOR_ROOT_SELECTOR)})].filter(root => {
           const rect = root.getBoundingClientRect();
           const style = doc.defaultView.getComputedStyle(root);
           return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
-        }).filter(root => !root.parentElement?.closest('.se-main-container, #SE-canvas'));
+        }).filter(root => !root.parentElement?.closest(${JSON.stringify(EDITOR_ROOT_SELECTOR)}));
         if (roots.length !== 1) continue;
         const paragraphs = [...roots[0].querySelectorAll(${JSON.stringify(selectors.join(','))})]
           .filter(p => !p.closest('.se-section-documentTitle, .se-documentTitle, .se-section-image') && !p.querySelector('.se-placeholder') && (p.innerText || p.textContent || '').replace(/[\\s\\u200b-\\u200d\\ufeff]/g, ''));
@@ -409,37 +430,82 @@ export class DebuggerSmartEditor {
         const target = paragraphs[Math.max(${anchorAfter} - 1, 0)];
         if (!target) return null;
         target.scrollIntoView({ block: 'center' });
-        const rect = target.getBoundingClientRect();
-        let x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        // Clicking the paragraph centre lands in the middle of a sentence.
+        // Read the actual first/last glyph box (including wrapped/nested spans)
+        // and let a native click update the editor model, not just DOM selection.
+        const walker = doc.createTreeWalker(target), texts = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.nodeType === 3 && /[^\\s\\u200b-\\u200d\\ufeff]/.test(node.textContent || '')) texts.push(node);
+        }
+        const node = ${anchorAfter} === 0 ? texts[0] : texts[texts.length - 1];
+        if (!node) return null;
+        const value = node.textContent || '';
+        const index = ${anchorAfter} === 0 ? value.search(/[^\\s\\u200b-\\u200d\\ufeff]/) : value.search(/[^\\s\\u200b-\\u200d\\ufeff](?=[\\s\\u200b-\\u200d\\ufeff]*$)/);
+        if (index < 0) return null;
+        const glyph = doc.createRange(); glyph.setStart(node, index); glyph.setEnd(node, index + 1);
+        const rect = glyph.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        const inset = Math.min(1, rect.width / 4);
+        let x = ${anchorAfter} === 0 ? rect.left + inset : rect.right - inset, y = rect.top + rect.height / 2;
         for (let view = doc.defaultView; view?.frameElement; view = view.parent) {
           const frame = view.frameElement, r = frame.getBoundingClientRect(); x += r.left + frame.clientLeft; y += r.top + frame.clientTop;
         }
-        target.setAttribute('data-ncos-caret', 'active');
-        return { x, y, text: '', tag: target.tagName };
+        return { x, y, text: target.innerText || target.textContent || '', tag: target.tagName, paragraphCount: paragraphs.length };
       }
       return null;
     })()`);
     if (!point) throw new DebuggerEditorError('upload_images', 'image_anchor_not_found', '전체 본문에서 지정된 이미지 위치를 찾지 못했습니다.');
     await this.clickPoint(point);
-    const ack = await this.evaluate<boolean>(`(() => {
+    // A DOM Range alone does not update SmartEditor's internal caret. Move with
+    // real arrow keys and only READ the selection to acknowledge a paragraph edge.
+    const remaining = async () => this.evaluate<number>(`(() => {
       const docs = [document];
       for (let i = 0; i < docs.length; i++) for (const frame of docs[i].querySelectorAll('iframe')) {
         try { if (frame.contentDocument && !docs.includes(frame.contentDocument)) docs.push(frame.contentDocument); } catch (_) {}
       }
       for (const doc of docs) {
-        const target = doc.querySelector('[data-ncos-caret="active"]');
-        if (!target) continue;
-        target.removeAttribute('data-ncos-caret');
-        const native = doc.getSelection();
-        if (!native?.rangeCount || !target.contains(native.anchorNode)) return false;
-        const range = doc.createRange(); range.selectNodeContents(target); range.collapse(${anchorAfter} === 0);
-        const selection = doc.getSelection(); if (!selection) return false;
-        selection.removeAllRanges(); selection.addRange(range);
-        return selection.rangeCount === 1 && selection.isCollapsed && target.contains(selection.anchorNode);
+        const roots = [...doc.querySelectorAll(${JSON.stringify(EDITOR_ROOT_SELECTOR)})].filter(root => {
+          const rect = root.getBoundingClientRect(), style = doc.defaultView.getComputedStyle(root);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        }).filter(root => !root.parentElement?.closest(${JSON.stringify(EDITOR_ROOT_SELECTOR)}));
+        if (roots.length !== 1) continue;
+        const paragraphs = [...roots[0].querySelectorAll(${JSON.stringify(selectors.join(','))})]
+          .filter(p => !p.closest('.se-section-documentTitle, .se-documentTitle, .se-section-image') && !p.querySelector('.se-placeholder') && (p.innerText || p.textContent || '').replace(/[\\s\\u200b-\\u200d\\ufeff]/g, ''));
+        const target = paragraphs[Math.max(${anchorAfter} - 1, 0)];
+        // SmartEditor recreates paragraph DOM nodes on navigation; an attribute
+        // on the previous node is not a stable identity. Re-resolve and pin text.
+        if (paragraphs.length !== ${point.paragraphCount} || !target || (target.innerText || target.textContent || '') !== ${JSON.stringify(point.text)}) return -1;
+        const selection = doc.getSelection();
+        if (!selection?.rangeCount || !selection.isCollapsed || !target.contains(selection.anchorNode)) return -1;
+        const range = doc.createRange(); range.selectNodeContents(target);
+        if (${anchorAfter} === 0) range.setEnd(selection.anchorNode, selection.anchorOffset);
+        else range.setStart(selection.anchorNode, selection.anchorOffset);
+        return range.toString().length;
       }
-      return false;
+      return -1;
     })()`);
-    if (!ack) throw new DebuggerEditorError('upload_images', 'image_caret_unconfirmed', '이미지 삽입 커서를 확인하지 못했습니다.');
+    let acknowledged = false;
+    {
+      let distance = await remaining();
+      const started = Date.now();
+      for (let step = 0; step <= 2000 && Date.now() - started < 15_000; step++) {
+        if (distance === 0) { acknowledged = true; break; }
+        if (distance < 0) break;
+        await this.pressKey(anchorAfter === 0 ? 'ArrowLeft' : 'ArrowRight', anchorAfter === 0 ? 'ArrowLeft' : 'ArrowRight', anchorAfter === 0 ? 37 : 39);
+        let next = await remaining();
+        // SmartEditor's hidden input frame applies keyboard navigation on a
+        // later render tick. Wait for ACK; do not send another key meanwhile.
+        const acknowledgementStarted = Date.now();
+        while ((next === distance || next < 0) && Date.now() - acknowledgementStarted < 300) {
+          await sleep(20);
+          next = await remaining();
+        }
+        // No movement or leaving the target is not a valid boundary ACK.
+        if (next < 0 || next >= distance) break;
+        distance = next;
+      }
+    }
+    if (!acknowledged) throw new DebuggerEditorError('upload_images', 'image_caret_unconfirmed', '이미지 삽입 위치의 문단 경계를 확인하지 못했습니다. 본문을 변경하지 않고 중단합니다.');
   }
 
   private waitForFileChooser(timeoutMs = 10_000): Promise<number> {
@@ -470,8 +536,8 @@ export class DebuggerSmartEditor {
         const rect = e.getBoundingClientRect(), style = e.ownerDocument.defaultView.getComputedStyle(e);
         return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
       };
-      const candidates = docs.flatMap(doc => [...doc.querySelectorAll('.se-main-container, #SE-canvas')])
-        .filter(visible).filter(root => !root.parentElement?.closest('.se-main-container, #SE-canvas'));
+      const candidates = docs.flatMap(doc => [...doc.querySelectorAll(${JSON.stringify(EDITOR_ROOT_SELECTOR)})])
+        .filter(visible).filter(root => !root.parentElement?.closest(${JSON.stringify(EDITOR_ROOT_SELECTOR)}));
       const bodyRoot = candidates.length === 1 ? candidates[0] : null;
       const doc = bodyRoot?.ownerDocument;
       const titleNode = doc && ${JSON.stringify(SELECTORS.title)}.flatMap(s => [...doc.querySelectorAll(s)]).find(visible);
@@ -555,6 +621,7 @@ export class DebuggerSmartEditor {
         const state = await this.editorState();
         const added = state.images.filter(i => i.complete && normalizeRemoteImageUrl(i.source) && !previous.has(normalizeRemoteImageUrl(i.source)));
         if (state.root_count === 1 && state.image_count === before.image_count + 1 && added.length === 1) {
+          if (JSON.stringify(state.body.split('\n').map(normalize)) !== JSON.stringify(before.body.split('\n').map(normalize))) throw new DebuggerEditorError('upload_images', 'image_paragraph_changed', '이미지 삽입 중 본문 문단이 나뉘거나 변경되어 중단했습니다. 원고를 확인하세요.');
           if (added[0].anchor_after !== asset.anchor_after) throw new DebuggerEditorError('upload_images', 'image_anchor_mismatch', '이미지가 지정한 본문 위치에 삽입되지 않았습니다.');
           receipt = { asset_id: asset.asset_id, sha256: asset.sha256, remote_url: normalizeRemoteImageUrl(added[0].source)! };
           break;
@@ -605,6 +672,7 @@ export class DebuggerSmartEditor {
         return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
       }).map(e => {
         if (e.hasAttribute('data-tag')) return e.getAttribute('data-tag');
+        if (e.id.startsWith('tag-item-') && e.hasAttribute('aria-label')) return e.getAttribute('aria-label');
         const clone = e.cloneNode(true); for (const b of clone.querySelectorAll('button, [role="button"]')) b.remove();
         return clone.textContent || '';
       });
@@ -616,10 +684,16 @@ export class DebuggerSmartEditor {
     const expected = normalizedTags(tags);
     await this.openTagLayer('input_tags');
     try {
+      await this.locate(SELECTORS.tagInput, 'input_tags', 'tag_input_not_found', '태그 입력란을 찾지 못했습니다.');
+      const existing = await this.readTags();
+      if (existing.some(tag => !expected.includes(tag))) throw new DebuggerEditorError('input_tags', 'existing_tags_protected', '요청에 없는 기존 태그를 발견해 변경하지 않았습니다.');
       for (const tag of expected) {
+        if ((await this.readTags()).includes(tag)) continue;
         await this.replaceText(SELECTORS.tagInput, tag, 'input_tags', 'tag_input_not_found', '태그 입력란을 찾지 못했습니다.');
         await this.pressKey('Enter', 'Enter', 13);
-        await sleep(150);
+        const started = Date.now();
+        while (!(await this.readTags()).includes(tag) && Date.now() - started < 3_000) await sleep(150);
+        if (!(await this.readTags()).includes(tag)) throw new DebuggerEditorError('input_tags', 'tag_readback_mismatch', '입력한 태그의 등록을 확인하지 못했습니다.');
       }
       if (JSON.stringify(await this.readTags()) !== JSON.stringify(expected)) {
         throw new DebuggerEditorError('input_tags', 'tag_readback_mismatch', '입력한 태그가 등록되지 않았거나 다른 태그가 있습니다.');
@@ -668,8 +742,8 @@ export class DebuggerSmartEditor {
     }
   }
 
-  private async dismissResumePrompt(): Promise<void> {
-    await this.evaluate(`(() => {
+  private async dismissResumePrompt(): Promise<boolean> {
+    return await this.evaluate<boolean>(`(() => {
       const docs = [document];
       for (let index = 0; index < docs.length; index += 1) {
         for (const frame of docs[index].querySelectorAll('iframe')) {
@@ -687,7 +761,6 @@ export class DebuggerSmartEditor {
       }
       return false;
     })()`).catch(() => false);
-    await sleep(300);
   }
 
   async execute(
@@ -709,6 +782,23 @@ export class DebuggerSmartEditor {
     validateCommand(command);
     await this.attach();
     try {
+      if (command.resume_stage === 'upload_images') {
+        const receipts = await step('upload_images', async () => {
+          await this.assertBodyReadyForImages(command);
+          return this.uploadImages(command.assets, loadAsset);
+        }, 'existing text and empty image set revalidated; remote images confirmed') as ImageReceipt[];
+        await step('input_tags', () => this.inputTags(command.tags), 'tag chips confirmed');
+        await step('draft_save', () => this.saveDraft(), 'fresh save acknowledgement received; reopen verification required');
+        return receipts;
+      }
+      if (command.resume_stage === 'input_tags') {
+        await step('input_tags', async () => {
+          await this.assertUploadedContent(command);
+          await this.inputTags(command.tags);
+        }, 'existing content revalidated; tag chips confirmed');
+        await step('draft_save', () => this.saveDraft(), 'fresh save acknowledgement received; reopen verification required');
+        return command.image_receipts!;
+      }
       await step('health_check', () => this.waitUntilReady());
       await step('prepare_editor', async () => {
         await this.assertBlankEditor();
@@ -733,24 +823,55 @@ export class DebuggerSmartEditor {
     } finally { await this.detach(); }
   }
 
+  private async assertUploadedContent(command: PublishCommand): Promise<void> {
+    const state = await this.editorState();
+    const receipts = command.image_receipts ?? [];
+    const ordered = [...command.assets].sort((a, b) => a.position - b.position);
+    const matches = state.root_count === 1 && !state.resume_prompt
+      && await contentHash(state.title) === command.title_hash
+      && await contentHash(state.body) === command.body_hash
+      && receipts.length === ordered.length && state.images.length === ordered.length
+      && ordered.every((asset, index) => {
+        const receipt = receipts.find(r => r.asset_id === asset.asset_id && r.sha256 === asset.sha256);
+        const actual = state.images[index];
+        return receipt && actual.complete && normalizeRemoteImageUrl(actual.source)
+          && normalizeRemoteImageUrl(actual.source) === normalizeRemoteImageUrl(receipt.remote_url)
+          && actual.anchor_after === asset.anchor_after;
+      });
+    if (!matches) throw new DebuggerEditorError('input_tags', 'resume_content_mismatch', '현재 원고와 업로드 체크포인트가 달라 재입력하지 않고 중단했습니다.');
+  }
+
+  private async assertBodyReadyForImages(command: PublishCommand): Promise<void> {
+    const state = await this.editorState();
+    const paragraphs = (value: string) => value.replace(/\r\n?/g, '\n').split('\n').map(normalize).filter(Boolean);
+    const matches = state.root_count === 1 && !state.resume_prompt && !state.image_count && !state.non_text_count
+      && await contentHash(state.title) === command.title_hash && await contentHash(state.body) === command.body_hash
+      && JSON.stringify(paragraphs(state.body)) === JSON.stringify(paragraphs(command.body));
+    if (!matches || await this.hasOpenPublishLayer()) throw new DebuggerEditorError('upload_images', 'resume_content_mismatch', '현재 본문이 다르거나 일부 이미지가 있어 자동 재입력하지 않고 중단했습니다. 원고를 확인하세요.');
+  }
+
   private async reopenFromDraftList(title: string): Promise<void> {
     // Never accept an already-open matching title as proof of a saved draft.
-    await this.dismissResumePrompt();
+    const startedOpening = Date.now();
+    let requested = false;
+    while (Date.now() - startedOpening < 8_000) {
+      // Recovery UI may arrive after the editor fields are already ready.
+      // A single early check + click can hit its backdrop instead of the list.
+      if (await this.dismissResumePrompt()) requested = false;
+      if (!requested) {
+        await this.click(SELECTORS.savedDraftListButton, 'reopen_verify', 'draft_list_button_not_found', '임시저장된 글 목록 버튼을 찾지 못했습니다.', {}, 8_000);
+        requested = true;
+      }
+      const list = await this.evaluate<boolean>(this.elementExpression(SELECTORS.savedDraftItem));
+      if (list) break;
+      await sleep(250);
+    }
     await this.click(
-      SELECTORS.savedDraftListButton,
-      'reopen_verify',
-      'draft_list_button_not_found',
-      '임시저장된 글 목록 버튼을 찾지 못했습니다.',
-      {},
-      8_000,
-    );
-    await sleep(500);
-    await this.click(
-      [],
+      SELECTORS.savedDraftItem,
       'reopen_verify',
       'saved_draft_not_found',
-      '방금 저장한 임시 글을 목록에서 찾지 못했습니다.',
-      { textIncludes: title, closestClickable: true },
+      '목록에서 저장한 제목을 고유하게 찾지 못했습니다.',
+      { textIncludes: title, unique: true },
       12_000,
     );
     const started = Date.now();
@@ -766,6 +887,28 @@ export class DebuggerSmartEditor {
     try {
       await this.waitUntilReady();
       await this.reopenFromDraftList(command.title);
+      // Reopened off-screen images initially render a data: SVG placeholder.
+      // Bring each pending image into view and wait for its real remote bytes;
+      // never treat the placeholder or an expected URL as observed evidence.
+      const imageWaitStarted = Date.now();
+      while (true) {
+        const loaded = await this.editorState();
+        if (loaded.root_count !== 1 || loaded.image_count !== command.assets.length) break;
+        if (loaded.remote_image_count === command.assets.length) break;
+        if (Date.now() - imageWaitStarted >= 20_000) break;
+        await this.evaluate(`(() => {
+          const docs = [document];
+          for (let i = 0; i < docs.length; i++) for (const f of docs[i].querySelectorAll('iframe')) {
+            try { if (f.contentDocument && !docs.includes(f.contentDocument)) docs.push(f.contentDocument); } catch (_) {}
+          }
+          for (const doc of docs) for (const root of doc.querySelectorAll(${JSON.stringify(EDITOR_ROOT_SELECTOR)})) {
+            const pending = [...root.querySelectorAll('img[src]')].find(i => !i.complete || !i.naturalWidth || !/^https:\\/\\/(?:blogfiles|postfiles)\\.pstatic\\.net\\//i.test(i.currentSrc || i.src));
+            if (pending) { pending.scrollIntoView({ block: 'center' }); return true; }
+          }
+          return false;
+        })()`);
+        await sleep(250);
+      }
       const state = await this.editorState();
       const actualTitleHash = await contentHash(state.title);
       const actualBodyHash = await contentHash(state.body);
@@ -781,6 +924,10 @@ export class DebuggerSmartEditor {
         }
         return { asset_id: asset.asset_id, sha256: asset.sha256, remote_url: normalizeRemoteImageUrl(matches[0].source)! };
       });
+      const paragraphs = (value: string) => value.replace(/\r\n?/g, '\n').split('\n').map(normalize).filter(Boolean);
+      if (JSON.stringify(paragraphs(state.body)) !== JSON.stringify(paragraphs(command.body))) {
+        throw new DebuggerEditorError('reopen_verify', 'body_structure_mismatch', '재열기 본문의 문단 구성이 원고와 달라 저장 검증을 통과하지 못했습니다.');
+      }
       await this.openTagLayer('reopen_verify');
       let actualTags: string[];
       try {

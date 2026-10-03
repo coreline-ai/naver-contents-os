@@ -506,18 +506,24 @@ def test_draft_assets_are_version_pinned_and_require_approval(sessions, tmp_path
         )
 
 
-def test_app_generates_three_valid_original_guide_images_idempotently(sessions, tmp_path):
+def test_app_generates_three_valid_original_guide_images_idempotently(sessions, tmp_path, monkeypatch):
     created = DraftService(sessions, None).create_draft("추석선물", PLAN_ITEM)
+    from PIL import ImageFont
+    font_path = tmp_path / "fixture.ttf"
+    font_path.write_bytes(ImageFont.load_default().font_bytes)
+    monkeypatch.setattr("app.services.draft_assets.korean_font_path", lambda: str(font_path))
+    body = "\n\n".join(f"Source paragraph {i}: " + "This is an isolated excerpt rendering fixture. " * 3 for i in range(6))
+    DraftService(sessions, None).add_version(created["draft_id"], "Excerpt fixture", body, expected_version=1)
     root = tmp_path / "assets"
     service = DraftAssetService(sessions, root=root)
 
-    generated = service.generate_guide_set(created["draft_id"], 1)
-    repeated = service.generate_guide_set(created["draft_id"], 1)
+    generated = service.generate_guide_set(created["draft_id"], 2)
+    repeated = service.generate_guide_set(created["draft_id"], 2)
 
     assert len(generated) == len(repeated) == 3
     assert [item["asset_id"] for item in repeated] == [item["asset_id"] for item in generated]
     assert [item["position"] for item in generated] == [0, 1, 2]
-    assert [item["anchor_after"] for item in generated] == [3, 6, 9]
+    assert [item["anchor_after"] for item in generated] == [2, 4, 5]
     assert all(item["rights_status"] == "approved" for item in generated)
     for item in generated:
         path = next(root.rglob(f'{item["sha256"]}.png'))
@@ -525,6 +531,12 @@ def test_app_generates_three_valid_original_guide_images_idempotently(sessions, 
         assert data.startswith(b"\x89PNG\r\n\x1a\n")
         assert data.endswith(b"IEND\xaeB`\x82")
         assert len(data) > 1_000
+
+
+    assert service.delete(created["draft_id"], generated[1]["asset_id"])
+    repaired = service.generate_guide_set(created["draft_id"], 2)
+    assert [row["anchor_after"] for row in repaired] == [2, 4, 5]
+    assert len({row["sha256"] for row in repaired}) == 3
 
 
 def _publish_receipts(command):
@@ -563,11 +575,11 @@ def test_extension_publish_job_is_idempotent_and_requires_reopen_verification(se
     service = PublishService(sessions, asset_service=assets)
     first = service.prepare(
         created["draft_id"], blog_id="target_blog", tags=["정리"], cdp_url="",
-        expected_version=2, transport="current_chrome_extension",
+        expected_version=2, transport="current_chrome_extension", target_worker_id="test-worker",
     )
     second = service.prepare(
         created["draft_id"], blog_id="target_blog", tags=["정리"], cdp_url="",
-        expected_version=2, transport="current_chrome_extension",
+        expected_version=2, transport="current_chrome_extension", target_worker_id="test-worker",
     )
     assert first is not None and second is not None
     assert first.job_id == second.job_id
@@ -589,7 +601,7 @@ def test_extension_publish_job_is_idempotent_and_requires_reopen_verification(se
     restarted = service.retry(first.job_id)
     assert restarted["job_id"] == first.job_id
     service.mark_waiting_extension(first)
-    command = service.next_extension_command("next-worker", blog_ids=["target_blog"])
+    command = service.next_extension_command("test-worker", blog_ids=["target_blog"])
     assert command["resume_stage"] == "reopen_verify"
     assert command["image_receipts"]
     passed = service.record_extension_event(
@@ -936,7 +948,7 @@ def test_publish_job_api_starts_existing_draft_and_exposes_status(draft_api):
     assert before_heartbeat.json()["current_chrome_extension"]["ready"] is False
     heartbeat = client.post(
         "/v1/publisher/extension-heartbeat",
-        json={"extension_id": "test-extension", "version": "0.2.0", "active_url": "https://blog.naver.com/"},
+        json={"extension_id": "test-extension", "version": "0.2.0", "protocol_version": 3, "build_id": "test-build", "active_url": "https://blog.naver.com/"},
         headers=_headers(token),
     )
     assert heartbeat.status_code == 200
@@ -976,7 +988,7 @@ def test_extension_publish_api_upload_command_retry_and_verified_completion(draf
     publisher._assets = assets
     client.app.dependency_overrides[api_module.get_draft_asset_service] = lambda: assets
     client.app.dependency_overrides[api_module.get_publish_service] = lambda: publisher
-    publisher.heartbeat(extension_id="extension-a", version="0.2.0", active_url="https://blog.naver.com/")
+    publisher.heartbeat(extension_id="extension-a", version="0.2.0", protocol_version=3, build_id="test-build", active_url="https://blog.naver.com/")
 
     for position in range(3):
         image_data = base64.b64encode(
@@ -1008,7 +1020,7 @@ def test_extension_publish_api_upload_command_retry_and_verified_completion(draf
         "blog_id": "sence4u",
         "tags": ["후쿠오카여행"],
         "expected_version": version["version"],
-        "transport": "current_chrome_extension",
+        "transport": "current_chrome_extension", "target_worker_id": "extension-a",
     }
     started = client.post(
         f"/v1/drafts/{draft['draft_id']}/publish-jobs",
@@ -1077,7 +1089,7 @@ def test_extension_publish_api_upload_command_retry_and_verified_completion(draf
     retried = client.post(f"/v1/publish-jobs/{job_id}/retry", headers=_headers(token))
     assert retried.status_code == 200
     assert retried.json()["job_id"] == job_id
-    resumed = client.get("/v1/publisher/next-command?lease_owner=extension-next&blog_id=sence4u", headers=_headers(token))
+    resumed = client.get("/v1/publisher/next-command?lease_owner=extension-a&blog_id=sence4u", headers=_headers(token))
     assert resumed.status_code == 200
     second = resumed.json()
     completed = client.post(
@@ -1126,7 +1138,7 @@ def test_extension_publish_preflight_distinguishes_transport_and_images(draft_ap
         "blog_id": "sence4u",
         "tags": [],
         "expected_version": 2,
-        "transport": "current_chrome_extension",
+        "transport": "current_chrome_extension", "target_worker_id": "extension-a",
     }
     disconnected = client.post(
         f"/v1/drafts/{draft['draft_id']}/publish-jobs",
@@ -1137,7 +1149,7 @@ def test_extension_publish_preflight_distinguishes_transport_and_images(draft_ap
     assert disconnected.json()["detail"]["code"] == "browser_transport_unavailable"
     client.post(
         "/v1/publisher/extension-heartbeat",
-        json={"extension_id": "extension-a", "version": "0.2.0"},
+        json={"extension_id": "extension-a", "version": "0.2.0", "protocol_version": 3, "build_id": "test-build"},
         headers=_headers(token),
     )
     no_images = client.post(

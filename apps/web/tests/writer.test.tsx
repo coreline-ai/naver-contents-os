@@ -1,3 +1,4 @@
+import type { WritingPreferences } from '../../../packages/workbench/src/common';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -5,18 +6,20 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Writer, DraftEditor, type ImprovementInput } from '@ncos/workbench';
 import { CoreClient, CoreError } from '@ncos/core-client';
 import type { DraftDetail } from '@ncos/contracts';
+import { browserConnection } from '../../../packages/workbench/src/browser-connection';
+vi.mock('../../../packages/workbench/src/browser-connection', () => ({ browserConnection: vi.fn(async () => ({ ok: true, worker_id: 'ego-worker', build_id: 'test-build', protocol_version: 3, debugger_available: true })) }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const detail: DraftDetail = { draft_id: 7, keyword: '후쿠오카 여행', blog_type: 'HOWTO', title: '후쿠오카 여행 안내', source_snapshot_id: 1, user_status: 'editing', fact_pack_id: null, fact_pack_version: null, created_at: '2026-09-06T10:00:00Z', provider: 'test', model: 'fixture', prompt_version: 'fixture', plan: { order: 1, title: '여행 안내', blog_type: 'HOWTO', target_keyword: '후쿠오카 여행', angle: '', reason: '', generation_status: 'ready', series_prev: null, series_next: null }, versions: [{ version: 1, title: '후쿠오카 여행 안내', body: '검수용 본문입니다. 실제 여행 정보가 아닙니다. '.repeat(150), note: '', created_at: '2026-09-06T10:00:00Z' }] };
 const composeResult = { draft: { draft_id: 7 }, quality: { score: 94, char_count: 2500, issues: [] }, suggested_tags: ['여행'] };
-let preferences = { blogId: '', tags: '', allowSensitiveUnknown: true };
+let preferences: WritingPreferences = { blogId: '', tags: '', allowSensitiveUnknown: true };
 let root: Root, host: HTMLDivElement, query: QueryClient;
-let client: { llmStatus: ReturnType<typeof vi.fn>; composeBlog: ReturnType<typeof vi.fn>; getDraft: ReturnType<typeof vi.fn>; addDraftVersion: ReturnType<typeof vi.fn>; specialized: ReturnType<typeof vi.fn>; updatePerformanceRecommendation: ReturnType<typeof vi.fn>; getPublishJob: ReturnType<typeof vi.fn>; latestPublishJob: ReturnType<typeof vi.fn>; startPublishJob: ReturnType<typeof vi.fn>; listDraftAssets: ReturnType<typeof vi.fn>; publisherReadiness: ReturnType<typeof vi.fn>; addDraftAsset: ReturnType<typeof vi.fn>; generateDraftGuideAssets: ReturnType<typeof vi.fn>; deleteDraftAsset: ReturnType<typeof vi.fn> };
+let client: { llmStatus: ReturnType<typeof vi.fn>; composeBlog: ReturnType<typeof vi.fn>; getDraft: ReturnType<typeof vi.fn>; addDraftVersion: ReturnType<typeof vi.fn>; specialized: ReturnType<typeof vi.fn>; updatePerformanceRecommendation: ReturnType<typeof vi.fn>; getPublishJob: ReturnType<typeof vi.fn>; latestPublishJob: ReturnType<typeof vi.fn>; startPublishJob: ReturnType<typeof vi.fn>; listDraftAssets: ReturnType<typeof vi.fn>; publisherReadiness: ReturnType<typeof vi.fn>; addDraftAsset: ReturnType<typeof vi.fn>; draftAssetContent: ReturnType<typeof vi.fn>; generateDraftGuideAssets: ReturnType<typeof vi.fn>; deleteDraftAsset: ReturnType<typeof vi.fn> };
 let onSaved: ReturnType<typeof vi.fn>, onDirty: ReturnType<typeof vi.fn>;
 beforeEach(() => { preferences = { blogId: '', tags: '', allowSensitiveUnknown: true }; });
-beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host); query = new QueryClient({ defaultOptions: { queries: { retry: false } } }); onSaved = vi.fn(); onDirty = vi.fn(); const assets = [0, 1, 2].map(position => ({ asset_id: position + 1, draft_id: 7, draft_version: 1, filename: `image-${position}.png`, mime_type: 'image/png', byte_size: 100, sha256: `hash-${position}`, position, anchor_after: position + 1, rights_status: 'approved', created_at: null })); client = { llmStatus: vi.fn().mockResolvedValue({ ready: true, engine: 'test', model: 'fixture' }), composeBlog: vi.fn().mockResolvedValue(composeResult), getDraft: vi.fn().mockResolvedValue(detail), addDraftVersion: vi.fn().mockResolvedValue({ draft_id: 7, version: 2 }), specialized: vi.fn(), updatePerformanceRecommendation: vi.fn().mockResolvedValue({ status: 'done' }), getPublishJob: vi.fn(), latestPublishJob: vi.fn().mockResolvedValue(null), startPublishJob: vi.fn(), listDraftAssets: vi.fn().mockResolvedValue(assets), publisherReadiness: vi.fn().mockResolvedValue({ current_chrome_extension: { ready: true }, dedicated_chrome_cdp: { ready: false, url: '' } }), addDraftAsset: vi.fn(), generateDraftGuideAssets: vi.fn().mockResolvedValue(assets), deleteDraftAsset: vi.fn() }; });
+beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host); query = new QueryClient({ defaultOptions: { queries: { retry: false } } }); onSaved = vi.fn(); onDirty = vi.fn(); const assets = [0, 1, 2].map(position => ({ asset_id: position + 1, draft_id: 7, draft_version: 1, filename: `image-${position}.png`, mime_type: 'image/png', byte_size: 100, sha256: `hash-${position}`, position, anchor_after: position + 1, rights_status: 'approved', created_at: null })); client = { llmStatus: vi.fn().mockResolvedValue({ ready: true, engine: 'test', model: 'fixture' }), composeBlog: vi.fn().mockResolvedValue(composeResult), getDraft: vi.fn().mockResolvedValue(detail), addDraftVersion: vi.fn().mockResolvedValue({ draft_id: 7, version: 2 }), specialized: vi.fn(), updatePerformanceRecommendation: vi.fn().mockResolvedValue({ status: 'done' }), getPublishJob: vi.fn(), latestPublishJob: vi.fn().mockResolvedValue(null), startPublishJob: vi.fn(), listDraftAssets: vi.fn().mockResolvedValue(assets), publisherReadiness: vi.fn().mockResolvedValue({ current_chrome_extension: { ready: true, extension_id: 'ego-worker', build_id: 'test-build' }, dedicated_chrome_cdp: { ready: false, url: '' } }), addDraftAsset: vi.fn(), draftAssetContent: vi.fn().mockRejectedValue(new Error('fixture preview not available')), generateDraftGuideAssets: vi.fn().mockResolvedValue(assets), deleteDraftAsset: vi.fn() }; });
 afterEach(async () => { await act(async () => root.unmount()); query.clear(); host.remove(); vi.restoreAllMocks(); });
 async function settle() { await act(async () => { await new Promise(r => setTimeout(r, 15)); }); }
-async function render(id?: number, improvementRequest?: { input: ImprovementInput; nonce: number }) { await act(async () => { root.render(<QueryClientProvider client={query}><Writer client={client as unknown as CoreClient} improvementRequest={improvementRequest} openRequest={id ? { id, nonce: id } : null} onSaved={onSaved} onDirtyChange={onDirty} preferences={preferences} onPreferences={() => {}}/></QueryClientProvider>); }); await settle(); }
+async function render(id?: number, improvementRequest?: { input: ImprovementInput; nonce: number }) { await act(async () => { root.render(<QueryClientProvider client={query}><Writer client={client as unknown as CoreClient} improvementRequest={improvementRequest} openRequest={id ? { id, nonce: id } : null} onSaved={onSaved} onDirtyChange={onDirty} preferences={preferences} onPreferences={value => { preferences = value; }}/></QueryClientProvider>); }); await settle(); }
 async function input(selector: string, value: string) { await act(async () => { const element = host.querySelector(selector) as HTMLInputElement; const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value); element.dispatchEvent(new Event('input', { bubbles: true })); }); }
 function button(text: string) { return [...host.querySelectorAll('button')].find(b => b.textContent === text)!; }
 async function click(text: string) { await act(async () => button(text).click()); await settle(); }
@@ -38,9 +41,16 @@ it('can create three original guide images through the app', async () => {
   const generated = [0, 1, 2].map(position => ({ asset_id: position + 11, draft_id: 7, draft_version: 1, filename: `app-guide-${position + 1}.png`, mime_type: 'image/png', byte_size: 1400, sha256: `generated-${position}`, position, anchor_after: (position + 1) * 3, rights_status: 'approved', created_at: null }));
   client.listDraftAssets.mockResolvedValueOnce([]).mockResolvedValue(generated);
   await render(7);
-  await click('앱이 안내 이미지 3장 만들기');
+  await click('본문 발췌 카드 3장 만들기');
   expect(client.generateDraftGuideAssets).toHaveBeenCalledWith(7, 1);
   expect(host.textContent).toContain('본문 이미지 · 3/3');
+});
+it('names the body-image file control and keeps uploads gated by rights approval', async () => {
+  await render(7);
+  const control = host.querySelector<HTMLInputElement>('input[type=file]')!;
+  expect(control.getAttribute('aria-label')).toBe('본문 이미지 파일 추가');
+  expect(control.disabled).toBe(true);
+  expect(client.addDraftAsset).not.toHaveBeenCalled();
 });
 it('saves the edited text with its expected version and preserves original history', async () => {
   await render(7); await input('#draft-body', '사용자가 수정한 본문');
@@ -227,8 +237,8 @@ it('locks mutations while publishing is requested and until the active job becom
 });
 it('locks guide generation in an active job even when there are fewer than three assets', async () => {
   client.listDraftAssets.mockResolvedValue([]); client.latestPublishJob.mockResolvedValue(activeJob); client.getPublishJob.mockResolvedValue(activeJob);
-  await render(7); await settle(); expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(true);
-  await click('앱이 안내 이미지 3장 만들기'); expect(client.generateDraftGuideAssets).not.toHaveBeenCalled();
+  await render(7); await settle(); expect(button('본문 발췌 카드 3장 만들기').disabled).toBe(true);
+  await click('본문 발췌 카드 3장 만들기'); expect(client.generateDraftGuideAssets).not.toHaveBeenCalled();
 });
 it('blocks a publisher POST in the same tick that deletion starts', async () => {
   preferences.blogId = 'test_blog'; vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -256,7 +266,7 @@ it('blocks deleting assets in the same tick that a version save starts', async (
 it('blocks a second guide generation and edits synchronously until the asset refresh finishes', async () => {
   client.listDraftAssets.mockResolvedValue([]); const generated = deferred<unknown>(); client.generateDraftGuideAssets.mockReturnValue(generated.promise);
   await render(7); const original = detail.versions[0].title;
-  await act(async () => { button('앱이 안내 이미지 3장 만들기').click(); button('앱이 안내 이미지 3장 만들기').click(); });
+  await act(async () => { button('본문 발췌 카드 3장 만들기').click(); button('본문 발췌 카드 3장 만들기').click(); });
   checkMutationLock(); expect(client.generateDraftGuideAssets).toHaveBeenCalledTimes(1);
   await input('#draft-title', '처리 중 바꿀 제목');
   expect((host.querySelector('#draft-title') as HTMLInputElement).value).toBe(original);
@@ -273,7 +283,7 @@ it('locks mutations after an uncertain publisher response and unlocks only after
 });
 it('blocks asset mutation and publisher requests when the asset list cannot be verified', async () => {
   preferences.blogId = 'test_blog'; client.listDraftAssets.mockRejectedValue(new Error('이미지 목록 연결 실패'));
-  await render(7); expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(true);
+  await render(7); expect(button('본문 발췌 카드 3장 만들기').disabled).toBe(true);
   expect(button('네이버에 임시저장').disabled).toBe(true);
   expect(host.textContent).toContain('이미지 목록을 확인하지 못해 변경과 임시저장을 막았습니다');
 });
@@ -356,9 +366,9 @@ it('recovers an unknown job query with the explicit previous-job check', async (
 });
 it('lets users recover a failed asset lookup without recreating the draft', async () => {
   client.listDraftAssets.mockRejectedValueOnce(new Error('목록 실패')).mockResolvedValue([]);
-  await render(7); expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(true);
+  await render(7); expect(button('본문 발췌 카드 3장 만들기').disabled).toBe(true);
   await click('이미지 목록 다시 확인');
-  expect(button('앱이 안내 이미지 3장 만들기').disabled).toBe(false);
+  expect(button('본문 발췌 카드 3장 만들기').disabled).toBe(false);
   expect(client.composeBlog).not.toHaveBeenCalled();
 });
 it('discards a late comparison error after changing the draft identity', async () => {
@@ -378,4 +388,100 @@ it('locks mutations on a mismatched job ID even if the response belongs to the s
   client.getPublishJob.mockResolvedValue({ ...activeJob, job_id: 99, status: 'draft_saved' });
   await render(7); await settle(); checkMutationLock();
   expect(host.textContent).toContain('다른 원고 또는 작업의 응답');
+});
+
+it('never enables publishing from another browsers global heartbeat', async () => {
+  client.publisherReadiness.mockResolvedValue({ current_chrome_extension: { ready: true, extension_id: 'other-browser', build_id: 'test-build' } });
+  await render(7); await input('#blog-id', 'fixture_blog');
+  expect(button('네이버에 임시저장').disabled).toBe(true);
+  expect(host.textContent).toContain('확장과 서버 연결이 일치하지 않습니다');
+  expect(client.startPublishJob).not.toHaveBeenCalled();
+});
+
+it('pins a web publish request to the browser that answered the nonce', async () => {
+  client.startPublishJob.mockResolvedValue({ job_id: 71, draft_id: 7, status: 'failed', stage: 'browser_attach', detail: '', history: [] });
+  client.getPublishJob.mockResolvedValue({ job_id: 71, draft_id: 7, status: 'failed', stage: 'browser_attach', detail: '', history: [] });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  await render(7); await input('#blog-id', 'fixture_blog'); await click('네이버에 임시저장');
+  expect(client.startPublishJob).toHaveBeenCalledWith(7, expect.objectContaining({ target_worker_id: 'ego-worker', transport: 'current_chrome_extension' }));
+  expect(client.publisherReadiness).toHaveBeenCalledWith('ego-worker');
+});
+
+it.each(['expired', 'server-offline', 'changed-build'])('disables stale ready state after %s and recovers without generating or saving', async failure => {
+  await render(7); await input('#blog-id', 'fixture_blog');
+  expect(button('네이버에 임시저장').disabled).toBe(false);
+  if (failure === 'server-offline') client.publisherReadiness.mockRejectedValueOnce(new Error('서버 연결 끊김'));
+  else client.publisherReadiness.mockResolvedValueOnce({ current_chrome_extension: { ready: failure !== 'expired', extension_id: 'ego-worker', build_id: failure === 'changed-build' ? 'other-build' : 'test-build' } });
+  await click('현재 브라우저 연결 다시 확인');
+  expect(button('네이버에 임시저장').disabled).toBe(true);
+  expect((host.querySelector('#draft-body') as HTMLTextAreaElement).value).toBe(detail.versions[0].body);
+  await click('현재 브라우저 연결 다시 확인');
+  expect(button('네이버에 임시저장').disabled).toBe(false);
+  expect(client.composeBlog).not.toHaveBeenCalled();
+  expect(client.startPublishJob).not.toHaveBeenCalled();
+});
+
+it.each(['missing', 'changed-worker'])('rechecks the browser immediately before submission and blocks %s', async failure => {
+  await render(7); await input('#blog-id', 'fixture_blog');
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  if (failure === 'missing') vi.mocked(browserConnection).mockRejectedValueOnce(new Error('확장 응답이 없습니다'));
+  else vi.mocked(browserConnection).mockResolvedValueOnce({ ok: true, worker_id: 'other-worker', build_id: 'test-build', protocol_version: 3, debugger_available: true });
+  await click('네이버에 임시저장');
+  expect(host.textContent).toContain(failure === 'missing' ? '확장 응답이 없습니다' : '확장 연결이 변경되었습니다');
+  expect(client.startPublishJob).not.toHaveBeenCalled();
+  expect(client.addDraftVersion).not.toHaveBeenCalled();
+  expect((host.querySelector('#draft-body') as HTMLTextAreaElement).value).toBe(detail.versions[0].body);
+});
+
+it('restores draft-specific manual tags including empty input on reopening', async () => {
+  await render(7); await input('#publish-tags', '직접입력,원고전용');
+  expect(preferences.draftTags?.[`${detail.draft_id}|${detail.created_at}`]).toBe('직접입력,원고전용');
+  await act(async () => root.render(<div/>)); await render(7);
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('직접입력,원고전용');
+  await input('#publish-tags', '');
+  await act(async () => root.render(<div/>)); await render(7);
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('');
+});
+it('does not transfer per-draft tags to a different draft', async () => {
+  preferences.draftTags = { [`7|${detail.created_at}`]: '기존원고태그' };
+  client.getDraft.mockResolvedValue({ ...detail, draft_id: 8 });
+  await render(8);
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('후쿠오카여행');
+});
+it('does not render excerpt cards from unsaved edits', async () => {
+  client.listDraftAssets.mockResolvedValue([]); await render(7);
+  await input('#draft-body', '미저장 내용');
+  expect(button('본문 발췌 카드 3장 만들기').disabled).toBe(true);
+  expect(client.generateDraftGuideAssets).not.toHaveBeenCalled();
+});
+it('loads authenticated preview blobs and revokes them when leaving the draft', async () => {
+  const create = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:private-preview');
+  const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  client.draftAssetContent.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+  await render(7);
+  expect(client.draftAssetContent).toHaveBeenCalledWith(7, 1, expect.any(AbortSignal));
+  expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:private-preview');
+  expect(host.textContent).toContain('1번째 문단 뒤');
+  await act(async () => root.render(<div/>));
+  expect(create).toHaveBeenCalledTimes(3); expect(revoke).toHaveBeenCalledTimes(3);
+});
+it('restores verified tags from legacy successful jobs without overwriting manual tags', async () => {
+  const job = { job_id: 99, draft_id: 7, draft_version: 1, status: 'verified_draft_saved', stage: 'reopen_verify', history: [], verification: { actual_tags: ['검증태그', '현재원고'] } };
+  client.latestPublishJob.mockResolvedValue(job); client.getPublishJob.mockResolvedValue(job);
+  await render(7);
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('검증태그, 현재원고');
+  await settle();
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).disabled).toBe(false);
+  await input('#publish-tags', '수동태그');
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('수동태그');
+  await act(async () => { await query.invalidateQueries({ queryKey: ['workbench-publish', 99] }); }); await settle();
+  expect((host.querySelector('#publish-tags') as HTMLInputElement).value).toBe('수동태그');
+});
+it('does not create an object URL from a late preview after leaving the draft', async () => {
+  let resolve!: (blob: Blob) => void;
+  client.draftAssetContent.mockImplementation(() => new Promise<Blob>(r => { resolve = r; }));
+  const create = vi.spyOn(URL, 'createObjectURL');
+  await render(7); await act(async () => root.render(<div/>));
+  await act(async () => resolve(new Blob(['late'], { type: 'image/png' }))); await settle();
+  expect(create).not.toHaveBeenCalled();
 });

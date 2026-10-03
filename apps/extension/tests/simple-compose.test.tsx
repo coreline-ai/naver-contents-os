@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const browserMock = vi.hoisted(() => ({
+  runtime: { sendMessage: vi.fn(async () => ({ ok: true, worker_id: 'fixture-worker', protocol_version: 3, build_id: 'test-build', debugger_available: true })) },
   storage: { local: { get: vi.fn(), set: vi.fn() } },
   tabs: { query: vi.fn(), sendMessage: vi.fn(), create: vi.fn() },
 }));

@@ -52,10 +52,7 @@ def isolated_publish(tmp_path, monkeypatch):
                    mime_type="image/png", data_base64=base64.b64encode(data).decode(),
                    position=position, anchor_after=position + 1, rights_status="approved")
     service = PublishService(sessions, asset_service=assets)
-    monkeypatch.setattr(service, "readiness", lambda _url: {
-        "current_chrome_extension": {"ready": True},
-        "dedicated_chrome_cdp": {"ready": False, "url": ""},
-    })
+    service.heartbeat(extension_id="fixture-worker", version="test", protocol_version=3, build_id="test-build")
     app = FastAPI()
     app.include_router(api.router)
     # Authentication has its own web/extension tests. This fixture isolates
@@ -71,10 +68,56 @@ def isolated_publish(tmp_path, monkeypatch):
 def start(client, draft_id):
     response = client.post(f"/v1/drafts/{draft_id}/publish-jobs", json={
         "blog_id": "contract_blog", "tags": ["자동검증", "임시글"],
-        "expected_version": 1, "transport": "current_chrome_extension",
+        "expected_version": 1, "transport": "current_chrome_extension", "target_worker_id": "fixture-worker",
     })
     assert response.status_code == 202, response.text
     return response.json()
+
+
+def test_private_asset_preview_checks_owner_integrity_and_auth(isolated_publish, monkeypatch):
+    client, draft_id, _sessions, assets = isolated_publish
+    row = assets.list(draft_id, 1)[0]
+    url = f"/v1/drafts/{draft_id}/assets/{row['asset_id']}/content"
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-type"] == "image/png"
+    assert client.get(f"/v1/drafts/{draft_id + 1}/assets/{row['asset_id']}/content").status_code == 404
+    from pathlib import Path
+    Path(assets.get_row(row["asset_id"]).local_path).write_bytes(b"tampered")
+    assert client.get(url).status_code == 409
+    from types import SimpleNamespace
+    monkeypatch.setattr("app.auth.get_settings", lambda: SimpleNamespace(resolve_token=lambda: "fixture-only"))
+    del client.app.dependency_overrides[require_token]
+    assert client.get(url).status_code == 401
+
+
+@pytest.mark.parametrize("stored, expected", [
+    (None, "none"), ("pending", "pending"), ("waiting_extension", "waiting_extension"),
+    ("running", "running"), ("draft_saved", "draft_saved"),
+    ("verified_draft_saved", "verified_draft_saved"), ("failed", "failed"),
+    ("future_unknown_state", "unknown"),
+])
+def test_draft_list_http_preserves_delivery_state(isolated_publish, stored, expected):
+    """Read-model + HTTP schema regression, using only the fixture-owned DB."""
+    from app.services.drafts import DraftService
+    client, draft_id, sessions, _assets = isolated_publish
+    client.app.dependency_overrides[api.get_draft_service_factory] = lambda: lambda _use_llm=False: DraftService(sessions, None)
+    if stored is not None:
+        job = start(client, draft_id)
+        with sessions() as session:
+            row = session.get(PublishJob, job["job_id"])
+            row.status = stored
+            row.stage = "reopen_verify" if stored == "verified_draft_saved" else "browser_attach"
+            session.commit()
+    response = client.get("/v1/drafts")
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["draft_id"] == draft_id
+    assert item["latest_job_status"] == expected
+    if stored is not None:
+        with sessions() as session:
+            assert session.get(PublishJob, job["job_id"]).status == stored
 
 
 def claim(client, owner="fixture-worker"):
@@ -143,7 +186,7 @@ def test_http_retry_preserves_reopen_checkpoint_and_rejects_old_attempt(isolated
     assert event(client, first, "reopen_verify", "failed", error_code="fixture_reopen_failure").status_code == 200
     retried = client.post(f"/v1/publish-jobs/{job['job_id']}/retry")
     assert retried.status_code == 200
-    second = claim(client, "second-worker")
+    second = claim(client)
     assert second["resume_stage"] == "reopen_verify"
     assert second["attempt_id"] != first["attempt_id"]
     assert second["image_receipts"] == image_receipts(first)
@@ -207,8 +250,23 @@ def test_http_strict_size_boundaries(isolated_publish, body_chars, image_count, 
         assets.delete(draft_id, assets.list(draft_id, 1)[0]["asset_id"])
     response = client.post(f"/v1/drafts/{draft_id}/publish-jobs", json={
         "blog_id": "contract_blog", "tags": [], "expected_version": 1,
-        "transport": "current_chrome_extension",
+        "transport": "current_chrome_extension", "target_worker_id": "fixture-worker",
     })
     assert response.status_code == expected, response.text
     with sessions() as session:
         assert session.query(PublishJob).count() == (1 if expected == 202 else 0)
+
+
+def test_http_body_checkpoint_resumes_images_and_rejects_retyping(isolated_publish):
+    client, draft_id, _, _ = isolated_publish
+    job = start(client, draft_id)
+    first = claim(client)
+    for stage in ('browser_attach', 'health_check', 'prepare_editor', 'input_title', 'input_body'):
+        assert event(client, first, stage, 'passed').status_code == 200
+    assert event(client, first, 'upload_images', 'failed', error_code='image_caret_unconfirmed').status_code == 200
+    assert client.post(f"/v1/publish-jobs/{job['job_id']}/retry").status_code == 200
+    second = claim(client)
+    assert second['resume_stage'] == 'upload_images'
+    assert event(client, second, 'input_title', 'passed').status_code == 409
+    assert event(client, first, 'upload_images', 'running').status_code == 409
+    assert event(client, second, 'upload_images', 'running').status_code == 200

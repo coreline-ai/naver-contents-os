@@ -67,7 +67,7 @@ export class CoreClient {
     private auth: CoreAuth,
   ) {}
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+  private async request<T>(path: string, init?: RequestInit, binary = false): Promise<T> {
     const webSession = typeof this.auth !== 'string';
     // Web credentials must never be sent to a configured remote Core URL.
     if (webSession && this.baseUrl !== '') {
@@ -99,6 +99,7 @@ export class CoreClient {
       );
     }
     if (response.status === 204) return undefined as T;
+    if (binary) return (await response.blob()) as T;
     return (await response.json()) as T;
   }
 
@@ -446,6 +447,7 @@ export class CoreClient {
       tags: string[];
       expected_version?: number;
       transport?: 'dedicated_chrome_cdp' | 'current_chrome_extension';
+      target_worker_id?: string;
     },
   ): Promise<PublishJob> {
     return this.request<PublishJob>(`/v1/drafts/${draftId}/publish-jobs`, {
@@ -495,6 +497,10 @@ export class CoreClient {
     return this.request<void>(`/v1/drafts/${draftId}/assets/${assetId}`, { method: 'DELETE' });
   }
 
+  draftAssetContent(draftId: number, assetId: number, signal?: AbortSignal): Promise<Blob> {
+    return this.request<Blob>(`/v1/drafts/${draftId}/assets/${assetId}/content`, { signal }, true);
+  }
+
   getPublishCommand(jobId: number, leaseOwner?: string): Promise<PublishCommand> {
     const query = leaseOwner ? `?lease_owner=${encodeURIComponent(leaseOwner)}` : '';
     return this.request<PublishCommand>(`/v1/publish-jobs/${jobId}/command${query}`);
@@ -525,11 +531,12 @@ export class CoreClient {
     return this.request<PublishJob>(`/v1/publish-jobs/${jobId}/retry`, { method: 'POST' });
   }
 
-  publisherReadiness(): Promise<PublisherReadiness> {
-    return this.request<PublisherReadiness>('/v1/publisher/readiness');
+  publisherReadiness(workerId?: string): Promise<PublisherReadiness> {
+    const query = workerId ? `?target_worker_id=${encodeURIComponent(workerId)}` : '';
+    return this.request<PublisherReadiness>(`/v1/publisher/readiness${query}`);
   }
 
-  publisherHeartbeat(input: { extension_id: string; version: string; active_url?: string }): Promise<PublisherReadiness> {
+  publisherHeartbeat(input: { extension_id: string; version: string; active_url?: string; protocol_version?: number; build_id?: string }): Promise<PublisherReadiness> {
     return this.request<PublisherReadiness>('/v1/publisher/extension-heartbeat', {
       method: 'POST',
       body: JSON.stringify(input),

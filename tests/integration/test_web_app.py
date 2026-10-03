@@ -174,4 +174,6 @@ def test_theme_bootstrap_revalidates_cache_without_weakening_csp(web_api):
     assert "script-src 'self'" in response.headers['content-security-policy']
     assert "style-src 'self'" in response.headers['content-security-policy']
     assert 'unsafe-inline' not in response.headers['content-security-policy']
+    assert "img-src 'self' blob:" in response.headers['content-security-policy']
+    assert "script-src 'self';" in response.headers['content-security-policy']
     assert 'immutable' in client.get('/app/assets/main-hash.js').headers['cache-control']

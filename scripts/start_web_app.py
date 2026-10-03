@@ -34,6 +34,8 @@ def main() -> int:
         try:
             with opener.open(url + '/web/version', timeout=2) as response:
                 body = json.load(response)
+            if not isinstance(body, dict):
+                raise RuntimeError(f'포트 {settings.local_core_port}의 서버 응답 형식이 올바르지 않습니다. 자동 종료하거나 연결하지 않았습니다.')
             if body.get('protocol') != 1 or body.get('revision') != expected:
                 raise RuntimeError('구버전 서버가 실행 중입니다. 해당 프로젝트 서버를 종료한 뒤 다시 실행하세요. 자동 종료하지 않았습니다.')
             return True

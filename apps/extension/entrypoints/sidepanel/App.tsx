@@ -22,6 +22,7 @@ import type {
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
+import { BROWSER_BRIDGE_PROTOCOL, MSG_BROWSER_CONNECTION, type BrowserConnection } from '@ncos/contracts';
 import { PcMobileDonut } from '~/components/PcMobileDonut';
 import { CoreClient, CoreError } from '~/lib/core';
 import { MSG_GET_BLOG, MSG_GET_SERP, MSG_RUN_PUBLISH_JOB, requestActiveTab } from '~/lib/messages';
@@ -383,19 +384,14 @@ export default function App() {
   >({
     mutationFn: async ({ draftId, blogId, tags }) => {
       const latestVersion = draft?.draft_id === draftId ? draft.versions.at(-1)?.version : undefined;
-      if (browser.runtime?.id) {
-        const [active] = await browser.tabs.query({ active: true, currentWindow: true });
-        await client.publisherHeartbeat({
-          extension_id: browser.runtime.id,
-          version: browser.runtime.getManifest().version,
-          active_url: active?.url ?? '',
-        });
-      }
+      const connection = await browser.runtime.sendMessage({ type: MSG_BROWSER_CONNECTION }) as BrowserConnection;
+      if (!connection?.ok || connection.protocol_version !== BROWSER_BRIDGE_PROTOCOL || !connection.debugger_available || !connection.worker_id || !connection.build_id) throw new Error('이 브라우저의 최신 확장 연결을 확인하세요.');
       const job = await client.startPublishJob(draftId, {
         blog_id: blogId,
         tags,
         expected_version: latestVersion,
         transport: 'current_chrome_extension',
+        target_worker_id: connection.worker_id,
       });
       void browser.runtime?.sendMessage?.({ type: MSG_RUN_PUBLISH_JOB, jobId: job.job_id })?.catch(() => undefined);
       return job;

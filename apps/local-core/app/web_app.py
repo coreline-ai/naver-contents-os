@@ -36,7 +36,7 @@ def web_router(build_dir: Path) -> APIRouter:
             "Cache-Control": "public, max-age=31536000, immutable" if target.is_relative_to(root / "assets") else "no-cache",
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         })
 
     return router

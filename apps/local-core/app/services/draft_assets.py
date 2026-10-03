@@ -8,8 +8,6 @@ import hashlib
 import json
 import os
 import re
-import struct
-import zlib
 from pathlib import Path
 
 from sqlalchemy import func, select, text
@@ -18,101 +16,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import DATA_DIR
 from app.models_db import Draft, DraftAsset, DraftVersion, PublishJob
+from app.services.guide_cards import excerpt_cards, korean_font_path, render_card
 
 MAX_ASSET_BYTES = 12 * 1024 * 1024
 MAX_ASSETS_PER_VERSION = 10
 ASSET_ROOT = DATA_DIR / "draft-assets"
 ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
 EXTENSION_BY_MIME = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
-
-
-def _png_chunk(kind: bytes, payload: bytes) -> bytes:
-    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
-
-
-class _Canvas:
-    """Tiny dependency-free raster canvas for original guide illustrations."""
-
-    def __init__(self, width: int, height: int, color: tuple[int, int, int]):
-        self.width = width
-        self.height = height
-        self.pixels = bytearray(color * (width * height))
-
-    def rectangle(self, x0: int, y0: int, x1: int, y1: int, color: tuple[int, int, int]) -> None:
-        x0, x1 = max(0, x0), min(self.width, x1)
-        y0, y1 = max(0, y0), min(self.height, y1)
-        row = bytes(color) * max(0, x1 - x0)
-        for y in range(y0, y1):
-            start = (y * self.width + x0) * 3
-            self.pixels[start:start + len(row)] = row
-
-    def circle(self, cx: int, cy: int, radius: int, color: tuple[int, int, int]) -> None:
-        radius2 = radius * radius
-        for y in range(max(0, cy - radius), min(self.height, cy + radius + 1)):
-            dy2 = (y - cy) ** 2
-            span = int(max(0, radius2 - dy2) ** 0.5)
-            self.rectangle(cx - span, y, cx + span + 1, y + 1, color)
-
-    def line(self, x0: int, y0: int, x1: int, y1: int, width: int, color: tuple[int, int, int]) -> None:
-        steps = max(abs(x1 - x0), abs(y1 - y0), 1)
-        for step in range(steps + 1):
-            x = round(x0 + (x1 - x0) * step / steps)
-            y = round(y0 + (y1 - y0) * step / steps)
-            self.circle(x, y, max(1, width // 2), color)
-
-    def png(self) -> bytes:
-        rows = b"".join(
-            b"\x00" + bytes(self.pixels[y * self.width * 3:(y + 1) * self.width * 3])
-            for y in range(self.height)
-        )
-        header = struct.pack(">IIBBBBB", self.width, self.height, 8, 2, 0, 0, 0)
-        return b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header) + _png_chunk(b"IDAT", zlib.compress(rows, 9)) + _png_chunk(b"IEND", b"")
-
-
-def _generated_guide_png(keyword: str, variant: int) -> bytes:
-    """Create one original, text-free editorial illustration for the draft."""
-    digest = hashlib.sha256(f"{keyword}:{variant}".encode("utf-8")).digest()
-    accent = (150 + digest[0] % 80, 70 + digest[1] % 100, 70 + digest[2] % 100)
-    dark = (40 + digest[3] % 45, 45 + digest[4] % 45, 55 + digest[5] % 45)
-    cream = (251, 247, 238)
-    mint = (116, 190, 160)
-    gold = (237, 184, 72)
-    canvas = _Canvas(1200, 800, cream)
-    canvas.rectangle(0, 0, 1200, 120, dark)
-    canvas.rectangle(0, 720, 1200, 800, dark)
-
-    if variant % 3 == 0:
-        canvas.rectangle(280, 310, 920, 650, accent)
-        canvas.rectangle(245, 255, 955, 345, dark)
-        canvas.rectangle(555, 255, 645, 650, gold)
-        canvas.circle(530, 245, 78, mint)
-        canvas.circle(670, 245, 78, mint)
-        canvas.circle(600, 250, 42, gold)
-        for i, (x, y) in enumerate(((160, 210), (1030, 190), (170, 610), (1040, 590), (95, 400), (1110, 390))):
-            canvas.circle(x, y, 14 + (digest[i + 6] % 18), gold if i % 2 else mint)
-    elif variant % 3 == 1:
-        for i, y in enumerate((220, 380, 540)):
-            canvas.rectangle(210, y, 990, y + 115, (255, 255, 255))
-            canvas.circle(285, y + 57, 34, mint if i < 2 else accent)
-            canvas.line(270, y + 58, 283, y + 72, 12, cream)
-            canvas.line(283, y + 72, 307, y + 42, 12, cream)
-            canvas.rectangle(360, y + 35, 800 - i * 65, y + 52, dark)
-            canvas.rectangle(360, y + 70, 900 - i * 80, y + 83, (194, 199, 202))
-    else:
-        canvas.rectangle(135, 455, 350, 620, accent)
-        canvas.rectangle(220, 455, 265, 620, gold)
-        canvas.rectangle(115, 420, 370, 480, dark)
-        canvas.rectangle(890, 390, 1080, 620, mint)
-        canvas.line(860, 405, 985, 285, 36, dark)
-        canvas.line(985, 285, 1110, 405, 36, dark)
-        canvas.rectangle(965, 515, 1015, 620, dark)
-        points = ((385, 515), (500, 430), (610, 500), (720, 390), (840, 470))
-        previous = (350, 515)
-        for point in points:
-            canvas.line(previous[0], previous[1], point[0], point[1], 12, gold)
-            canvas.circle(point[0], point[1], 15, accent)
-            previous = point
-    return canvas.png()
 
 
 def _safe_name(value: str, suffix: str) -> str:
@@ -273,38 +183,36 @@ class DraftAssetService:
             return [_view(row) for row in rows]
 
     def generate_guide_set(self, draft_id: int, draft_version: int, count: int = 3) -> list[dict]:
-        """Fill the current version with up to three app-created guide images."""
+        """Fill missing slots with excerpts from the saved version; never replace old assets."""
         target_count = max(1, min(3, count))
         with self._sessions() as session:
-            draft = session.get(Draft, draft_id)
-            if draft is None:
+            _require_mutable(session, draft_id, draft_version)
+            if session.get(Draft, draft_id) is None:
                 raise ValueError("draft not found")
-            version_exists = session.scalar(
-                select(DraftVersion.id).where(
-                    DraftVersion.draft_id == draft_id,
-                    DraftVersion.version == draft_version,
-                )
-            )
-            if version_exists is None:
+            version = session.scalar(select(DraftVersion).where(
+                DraftVersion.draft_id == draft_id, DraftVersion.version == draft_version,
+            ))
+            if version is None:
                 raise ValueError("draft version not found")
-            from app.models_db import Keyword
-            keyword = session.get(Keyword, draft.keyword_id)
-            topic = keyword.text if keyword is not None else f"draft-{draft_id}"
-
+            title, body = version.title, version.body
         existing = self.list(draft_id, draft_version)
+        if len(existing) >= target_count:
+            return existing
+        cards = excerpt_cards(title, body, target_count)
+        font_path = korean_font_path()
         used_positions = {item["position"] for item in existing}
-        for variant in range(len(existing), target_count):
+        used_anchors = {item["anchor_after"] for item in existing}
+        # Prefer the removed card's source paragraph on retries, not a duplicate of the last card.
+        candidates = sorted(enumerate(cards), key=lambda pair: pair[1].anchor_after in used_anchors)
+        prepared = [(card, render_card(card, index + 1, font_path))
+                    for index, card in candidates[:target_count - len(existing)]]
+        for card, data in prepared:
             position = next(value for value in range(MAX_ASSETS_PER_VERSION) if value not in used_positions)
-            data = _generated_guide_png(topic, variant)
             self.add(
-                draft_id,
-                draft_version=draft_version,
-                filename=f"app-guide-{variant + 1}.png",
-                mime_type="image/png",
-                data_base64=base64.b64encode(data).decode("ascii"),
-                position=position,
-                anchor_after=(variant + 1) * 3,
-                rights_status="approved",
+                draft_id, draft_version=draft_version,
+                filename=f"body-excerpt-p{card.anchor_after}.png", mime_type="image/png",
+                data_base64=base64.b64encode(data).decode("ascii"), position=position,
+                anchor_after=card.anchor_after, rights_status="approved",
             )
             used_positions.add(position)
         return self.list(draft_id, draft_version)

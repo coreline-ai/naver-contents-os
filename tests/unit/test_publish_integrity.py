@@ -44,7 +44,7 @@ def publisher(tmp_path):
 
 def prepare(service, draft_id, *, tags=None):
     return service.prepare(draft_id, blog_id="fixture-blog", tags=tags or ["격리 태그"], cdp_url="",
-                           expected_version=1, transport="current_chrome_extension")
+                           expected_version=1, transport="current_chrome_extension", target_worker_id="worker")
 
 
 def receipts(command):
@@ -85,7 +85,7 @@ def test_two_sessions_claim_exactly_one_worker(publisher):
         barrier.wait(timeout=5)
         return store.claim_lease(task.job_id, owner)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        result = list(pool.map(claim, ("worker-a", "worker-b")))
+        result = list(pool.map(claim, ("worker", "worker")))
     assert sorted(result) == [False, True]
     assert not SqlJobStore(sessions).claim_lease(task.job_id, service.get_job(task.job_id)["lease_owner"])
 
@@ -192,7 +192,7 @@ def test_tampered_file_is_rejected_before_claim_and_download(publisher):
 def test_skip_stages_owner_and_old_attempt_cannot_complete_job(publisher):
     service, _, _, draft_id = publisher
     task = prepare(service, draft_id)
-    first = service.command(task.job_id, lease_owner="worker-a")
+    first = service.command(task.job_id, lease_owner="worker")
     with pytest.raises(ValueError, match="transition"):
         event(service, first, "reopen_verify", "passed", verification=verified(first))
     wrong_owner = {**first, "lease_owner": "worker-b"}
@@ -201,7 +201,7 @@ def test_skip_stages_owner_and_old_attempt_cannot_complete_job(publisher):
     saved_checkpoint(service, first)
     event(service, first, "reopen_verify", "failed")
     service.retry(task.job_id)
-    second = service.command(task.job_id, lease_owner="worker-b")
+    second = service.command(task.job_id, lease_owner="worker")
     assert second["resume_stage"] == "reopen_verify"
     assert second["image_receipts"] == receipts(first)
     with pytest.raises(ValueError, match="stale"):
@@ -213,28 +213,50 @@ def test_skip_stages_owner_and_old_attempt_cannot_complete_job(publisher):
 def test_draft_save_ack_uncertain_resumes_only_reopen(publisher):
     service, _, _, draft_id = publisher
     task = prepare(service, draft_id)
-    first = service.command(task.job_id, lease_owner="worker-a")
+    first = service.command(task.job_id, lease_owner="worker")
     saved_checkpoint(service, first, save_passed=False)
     event(service, first, "draft_save", "failed", error_code="draft_save_ack_timeout")
     service.retry(task.job_id)
     service.mark_waiting_extension(task)
-    second = service.next_extension_command("worker-b", blog_ids=["fixture-blog"])
+    second = service.next_extension_command("worker", blog_ids=["fixture-blog"])
     assert second["resume_stage"] == "reopen_verify"
     with pytest.raises(ValueError, match="transition"):
         event(service, second, "prepare_editor", "passed")
     assert event(service, second, "reopen_verify", "passed", verification=verified(second))["status"] == "verified_draft_saved"
 
 
+def test_tag_failure_preserves_upload_checkpoint_and_forbids_retyping(publisher):
+    service, _, _, draft_id = publisher
+    task = prepare(service, draft_id)
+    command = service.command(task.job_id, lease_owner="worker")
+    for stage in EXTENSION_STAGES:
+        if stage == "input_tags":
+            break
+        event(service, command, stage, "passed", verification={"image_receipts": receipts(command)} if stage == "upload_images" else None)
+    for _ in range(2):
+        event(service, command, "input_tags", "failed", error_code="tag_readback_mismatch")
+        service.retry(task.job_id)
+        command = service.command(task.job_id, lease_owner="worker")
+        assert command["resume_stage"] == "input_tags"
+        assert command["image_receipts"] == receipts(command)
+        with pytest.raises(ValueError, match="transition"):
+            event(service, command, "input_body", "passed")
+    event(service, command, "browser_attach", "passed")
+    event(service, command, "input_tags", "passed")
+    event(service, command, "draft_save", "passed")
+    assert event(service, command, "reopen_verify", "passed", verification=verified(command))["status"] == "verified_draft_saved"
+
+
 def test_lost_passed_response_at_save_also_preserves_checkpoint(publisher):
     service, _, _, draft_id = publisher
     task = prepare(service, draft_id)
-    first = service.command(task.job_id, lease_owner="worker-a")
+    first = service.command(task.job_id, lease_owner="worker")
     saved_checkpoint(service, first)
     # The server persisted 'passed', but the client missed that HTTP response.
     failed = event(service, first, "draft_save", "failed", error_code="response_lost")
     assert failed["status"] == "failed"
     service.retry(task.job_id)
-    second = service.command(task.job_id, lease_owner="worker-b")
+    second = service.command(task.job_id, lease_owner="worker")
     assert second["resume_stage"] == "reopen_verify"
     assert event(service, second, "reopen_verify", "passed", verification=verified(second))["status"] == "verified_draft_saved"
 
@@ -242,20 +264,20 @@ def test_lost_passed_response_at_save_also_preserves_checkpoint(publisher):
 def test_expired_lease_fails_without_automatic_writer_and_unlocks_assets(publisher):
     service, sessions, assets, draft_id = publisher
     task = prepare(service, draft_id)
-    command = service.command(task.job_id, lease_owner="worker-a")
+    command = service.command(task.job_id, lease_owner="worker")
     saved_checkpoint(service, command, save_passed=False)
     with sessions() as session:
         row = session.get(PublishJob, task.job_id)
         row.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
         session.commit()
-    assert service.next_extension_command("worker-b", blog_ids=["fixture-blog"]) is None
+    assert service.next_extension_command("worker", blog_ids=["fixture-blog"]) is None
     failed = service.get_job(task.job_id)
     assert failed["status"] == "failed" and failed["error_code"] == "lease_expired"
     assert failed["history"][-1]["error_code"] == "lease_expired"
     with pytest.raises(ValueError, match="stale"):
         event(service, command, "draft_save", "passed")
     service.retry(task.job_id)
-    next_command = service.command(task.job_id, lease_owner="worker-b")
+    next_command = service.command(task.job_id, lease_owner="worker")
     assert next_command["resume_stage"] == "reopen_verify"
     assert event(service, next_command, "reopen_verify", "passed", verification=verified(next_command))["status"] == "verified_draft_saved"
     assert assets.delete(draft_id, assets.list(draft_id, 1)[0]["asset_id"])
@@ -295,3 +317,121 @@ def test_legacy_jobs_without_snapshot_fail_closed(publisher):
     with pytest.raises(DraftVersionConflict, match="새 버전으로 저장"):
         service.retry(job_id)
     assert service.get_job(job_id)["status"] == "failed"
+
+
+def test_pinned_browser_rejects_other_worker_before_claim_and_on_poll(publisher):
+    service, sessions, _, draft_id = publisher
+    task = prepare(service, draft_id)
+    assert service.next_extension_command('other-browser', blog_ids=['fixture-blog']) is None
+    with pytest.raises(ValueError, match='another browser'):
+        service.command(task.job_id, lease_owner='other-browser')
+    assert not SqlJobStore(sessions).claim_lease(task.job_id, 'other-browser')
+    assert service.get_job(task.job_id)['lease_owner'] is None
+    assert service.command(task.job_id, lease_owner='worker')['lease_owner'] == 'worker'
+
+
+def test_new_extension_jobs_require_explicit_browser_target(publisher):
+    service, _, _, draft_id = publisher
+    with pytest.raises(ValueError, match='현재 브라우저'):
+        service.prepare(draft_id, blog_id='fixture-blog', tags=[], cdp_url='', transport='current_chrome_extension')
+
+
+def test_same_content_cannot_silently_retarget_an_existing_job(publisher):
+    service, sessions, _, draft_id = publisher
+    task = prepare(service, draft_id)
+    with pytest.raises(ValueError, match='기존 작업'):
+        service.prepare(draft_id, blog_id='fixture-blog', tags=['격리 태그'], cdp_url='', expected_version=1,
+                        transport='current_chrome_extension', target_worker_id='other-browser')
+    assert service.get_job(task.job_id)['request_payload']['target_worker_id'] == 'worker'
+    with sessions() as session:
+        assert session.query(PublishJob).count() == 1
+
+
+def test_legacy_unbound_job_cannot_be_claimed_or_polled(publisher):
+    service, sessions, _, draft_id = publisher
+    task = prepare(service, draft_id)
+    with sessions() as session:
+        row = session.get(PublishJob, task.job_id)
+        row.request_payload = {k: v for k, v in row.request_payload.items() if k != 'target_worker_id'}
+        session.commit()
+    assert service.next_extension_command('worker', blog_ids=['fixture-blog']) is None
+    assert not service._store.claim_lease(task.job_id, 'worker')
+    with pytest.raises(ValueError, match='updated client'):
+        service.command(task.job_id, lease_owner='worker')
+
+
+def test_readiness_requires_matching_fresh_protocol_and_build(publisher):
+    service, _, _, _ = publisher
+    service.heartbeat(extension_id='ego', version='test', protocol_version=3, build_id='build-ego')
+    service.heartbeat(extension_id='chrome', version='test', protocol_version=3, build_id='build-chrome')
+    assert not service.readiness('')['current_chrome_extension']['ready']
+    assert not service.readiness('', target_worker_id='missing')['current_chrome_extension']['ready']
+    ego = service.readiness('', target_worker_id='ego')['current_chrome_extension']
+    assert ego['ready'] and ego['build_id'] == 'build-ego'
+    service._extension_heartbeats['ego']['seen_at'] = datetime.now(timezone.utc) - timedelta(seconds=21)
+    assert not service.readiness('', target_worker_id='ego')['current_chrome_extension']['ready']
+    assert service.readiness('', target_worker_id='chrome')['current_chrome_extension']['ready']
+    assert not service.heartbeat(extension_id='old', version='0.2')['current_chrome_extension']['ready']
+    assert not service.heartbeat(extension_id='no-build', version='0.2', protocol_version=3)['current_chrome_extension']['ready']
+
+
+def test_poll_filters_target_before_queue_limit(publisher):
+    service, sessions, _, draft_id = publisher
+    # Older foreign/unbound jobs must not starve the requested browser's queue.
+    with sessions() as session:
+        for n in range(21):
+            session.add(PublishJob(draft_id=draft_id, draft_version=99+n, status='pending', transport='current_chrome_extension',
+                                  request_payload={'blog_id': 'fixture-blog', 'target_worker_id': 'foreign'}, history=[]))
+        session.commit()
+    task = prepare(service, draft_id)
+    assert service.next_extension_command('worker', blog_ids=['fixture-blog'])['job_id'] == task.job_id
+
+
+def test_concurrent_browser_create_cannot_return_foreign_target_job(publisher, monkeypatch):
+    service, sessions, _, draft_id = publisher
+    barrier = Barrier(2)
+    original = service._store.by_idempotency_key
+    def read_before_race(key):
+        value = original(key)
+        barrier.wait(timeout=5)
+        return value
+    monkeypatch.setattr(service._store, 'by_idempotency_key', read_before_race)
+    def create(owner):
+        try:
+            task = service.prepare(draft_id, blog_id='fixture-blog', tags=[], cdp_url='', expected_version=1,
+                                   transport='current_chrome_extension', target_worker_id=owner)
+            assert service.get_job(task.job_id)['request_payload']['target_worker_id'] == owner
+            return 'created'
+        except DraftVersionConflict:
+            return 'conflict'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(create, ('ego', 'chrome')))
+    assert sorted(results) == ['conflict', 'created']
+    with sessions() as session:
+        assert session.query(PublishJob).count() == 1
+
+
+def test_image_caret_failure_resumes_from_verified_text_not_retyping(publisher):
+    service, _, _, draft_id = publisher
+    task = prepare(service, draft_id)
+    command = service.command(task.job_id, lease_owner="worker")
+    for stage in EXTENSION_STAGES:
+        if stage == "upload_images":
+            break
+        event(service, command, stage, "passed")
+    for _ in range(2):
+        event(service, command, "upload_images", "failed", error_code="image_caret_unconfirmed")
+        service.retry(task.job_id)
+        previous = command
+        command = service.command(task.job_id, lease_owner="worker")
+        assert command["resume_stage"] == "upload_images"
+        assert command["attempt_id"] != previous["attempt_id"]
+        with pytest.raises(ValueError, match="stale"):
+            event(service, previous, "upload_images", "passed")
+        with pytest.raises(ValueError, match="transition"):
+            event(service, command, "input_body", "passed")
+    event(service, command, "browser_attach", "passed")
+    event(service, command, "upload_images", "passed", verification={"image_receipts": receipts(command)})
+    event(service, command, "input_tags", "passed")
+    event(service, command, "draft_save", "passed")
+    assert event(service, command, "reopen_verify", "passed", verification=verified(command))["status"] == "verified_draft_saved"

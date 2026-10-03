@@ -2,7 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ArticleQuality, DraftAsset, DraftDetail, SpecializedResponse } from '@ncos/contracts';
 import { CoreError, type CoreClient } from '@ncos/core-client';
-import { message, formatTime, type WritingPreferences } from './common';
+import { message, formatTime, readDraftTags, type WritingPreferences } from './common';
+import { DraftAssetPreview } from './DraftAssetPreview';
+import { browserConnection } from './browser-connection';
+import { usePublisherConnection } from './use-publisher-connection';
 
 function terminalJob(status: string): boolean { return ['draft_saved', 'verified_draft_saved', 'failed'].includes(status); }
 function external(value: unknown): string | null { try { const url = new URL(String(value)); return ['http:', 'https:'].includes(url.protocol) ? url.href : null; } catch { return null; } }
@@ -31,7 +34,10 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
   const [publishError, setPublishError] = useState('');
   const [blogId, setBlogId] = useState(preferences.blogId);
   const suggestedTagText = suggestedTags.length ? suggestedTags.join(', ') : draft.keyword.replace(/\s+/g, '');
-  const [tags, setTags] = useState(suggestedTagText);
+  const tagKey = `${draft.draft_id}|${draft.created_at}`;
+  const savedDraftTags = readDraftTags(preferences.draftTags);
+  const [tags, setTags] = useState(savedDraftTags[tagKey] ?? suggestedTagText);
+  const editedTags = useRef({ key: tagKey, edited: Object.hasOwn(savedDraftTags, tagKey) });
   const [showFacts, setShowFacts] = useState(false);
   const [publicationUrl, setPublicationUrl] = useState('');
   const [publicationDate, setPublicationDate] = useState('');
@@ -51,7 +57,17 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
   const alive = useRef(true);
   const uncertainAfter = useRef(0);
   useEffect(() => { setBlogId(preferences.blogId); }, [preferences.blogId]);
-  useEffect(() => { setTags(suggestedTagText); }, [draft.draft_id, suggestedTagText]);
+  useEffect(() => {
+    if (editedTags.current.key !== tagKey) {
+      editedTags.current = { key: tagKey, edited: Object.hasOwn(savedDraftTags, tagKey) };
+      setTags(savedDraftTags[tagKey] ?? suggestedTagText);
+    } else if (!editedTags.current.edited) setTags(suggestedTagText);
+  }, [tagKey, suggestedTagText]);
+  function editTags(value: string) {
+    editedTags.current = { key: tagKey, edited: true };
+    setTags(value);
+    onPreferences({ ...preferences, draftTags: readDraftTags({ ...savedDraftTags, [tagKey]: value }) });
+  }
   const dirty = title !== latest.title || body !== latest.body;
   useEffect(() => { alive.current = true; return () => { alive.current = false; ++comparisonEpoch.current; }; }, []);
   useEffect(() => { setTitle(latest.title); setBody(latest.body); setNote(''); setConflict(null); ++comparisonEpoch.current; }, [draft.draft_id, latest.version]);
@@ -65,10 +81,18 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
   }, [previousJob.data, draft.draft_id]);
   const job = useQuery({ queryKey: ['workbench-publish', jobId], queryFn: async () => { const result = await client.getPublishJob(jobId!); if (result.draft_id !== draft.draft_id || result.job_id !== jobId) throw new Error('다른 원고 또는 작업의 응답입니다. 다시 확인하세요.'); return result; }, enabled: !!jobId, refetchInterval: q => q.state.data && terminalJob(q.state.data.status) ? false : 2000 });
   const assets = useQuery({ queryKey: ['workbench-draft-assets', draft.draft_id, latest.version], queryFn: () => client.listDraftAssets(draft.draft_id, latest.version) });
-  const readiness = useQuery({ queryKey: ['workbench-publisher-readiness'], queryFn: () => client.publisherReadiness(), refetchInterval: 10_000 });
+  const readiness = usePublisherConnection(client);
   const assetRows = Array.isArray(assets.data) ? assets.data : [];
-  const extensionReady = readiness.data?.current_chrome_extension?.ready === true;
+  const extensionReady = !readiness.isError && readiness.data?.current_chrome_extension?.ready === true;
   const currentJob = job.data?.job_id === jobId ? job.data : previousJob.data?.job_id === jobId ? previousJob.data : null;
+  useEffect(() => {
+    // Migrate older successful drafts without borrowing global tags from another article.
+    const actual = currentJob?.verification?.actual_tags;
+    if (!editedTags.current.edited && currentJob?.draft_id === draft.draft_id && currentJob.status === 'verified_draft_saved' && Array.isArray(actual) && actual.every(t => typeof t === 'string')) {
+      editedTags.current.edited = true;
+      setTags(actual.join(', '));
+    }
+  }, [currentJob, draft.draft_id]);
   const jobLocked = publishing || publishUnknown || previousJob.isPending || previousJob.isFetching || previousJob.isError || job.isError || (!!jobId && job.isFetching) || (!!jobId && (!currentJob || !terminalJob(currentJob.status))) || (!!previousJob.data && (!jobId || previousJob.data.job_id > jobId) && !terminalJob(previousJob.data.status));
   const mutationLocked = disabled || saving || registering || assetBusy || jobLocked;
   const assetsLocked = mutationLocked || assets.isPending || assets.isFetching || assets.isError;
@@ -107,7 +131,7 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
   }
   async function removeAsset(assetId: number) { if (cannotMutate() || assetsLocked) return; assetMutationBusy.current = true; setAssetBusy(true); setAssetError(''); try { await client.deleteDraftAsset(draft.draft_id, assetId); await assets.refetch(); } catch (e) { setAssetError(message(e)); } finally { assetMutationBusy.current = false; if (alive.current) setAssetBusy(false); } }
   async function generateGuideAssets() {
-    if (cannotMutate() || assetsLocked || assetRows.length >= 3) return;
+    if (cannotMutate() || assetsLocked || dirty || assetRows.length >= 3) return;
     assetMutationBusy.current = true; setAssetBusy(true); setAssetError('');
     try {
       await client.generateDraftGuideAssets(draft.draft_id, latest.version);
@@ -153,11 +177,15 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
     const selectedTags = tags.split(',').map(t => t.trim()).filter(Boolean);
     if (cannotMutate() || assets.isPending || assets.isFetching || assets.isError || dirty || body.length < 3000 || assetRows.length < 3 || !extensionReady || !/^[A-Za-z0-9_-]+$/.test(blogId) || selectedTags.length > 10 || selectedTags.some(t => t.length > 50)) return;
     publishBusy.current = true;
-    if (!window.confirm(`블로그 ${blogId}에 현재 원고 v${latest.version}을 현재 Chrome으로 임시저장할까요? 공개 발행은 하지 않습니다.`)) { publishBusy.current = false; return; }
+    if (!window.confirm(`블로그 ${blogId}에 현재 원고 v${latest.version}을 이 브라우저로 임시저장할까요? 공개 발행은 하지 않습니다.`)) { publishBusy.current = false; return; }
     uncertainAfter.current = Math.max(jobId ?? 0, previousJob.data?.job_id ?? 0);
     setPublishing(true); setPublishError('');
+    let requested = false;
     try {
-      const job = await client.startPublishJob(draft.draft_id, { blog_id: blogId, tags: selectedTags, expected_version: latest.version, transport: 'current_chrome_extension' });
+      const connection = await browserConnection();
+      if (connection.worker_id !== readiness.data?.connection.worker_id || connection.build_id !== readiness.data?.connection.build_id) throw new Error('확장 연결이 변경되었습니다. 현재 브라우저 연결을 다시 확인하세요.');
+      requested = true;
+      const job = await client.startPublishJob(draft.draft_id, { blog_id: blogId, tags: selectedTags, expected_version: latest.version, transport: 'current_chrome_extension', target_worker_id: connection.worker_id });
       if (job.draft_id !== draft.draft_id) throw new Error('다른 원고의 작업 응답입니다. 생성 여부를 다시 확인하세요.');
       submittedJob.current = job.job_id;
       queryClient.setQueryData(['workbench-publish', job.job_id], job);
@@ -166,10 +194,10 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
       if (alive.current) { setJobId(job.job_id); onPreferences({ ...preferences, blogId, tags }); }
     } catch (e) {
       if (alive.current) {
-        const rejected = e instanceof CoreError && [400, 401, 403, 404, 409, 422].includes(e.status);
+        const rejected = !requested || (e instanceof CoreError && [400, 401, 403, 404, 409, 422].includes(e.status));
         setPublishError(rejected ? `${message(e)} 요청이 거부되었습니다. 연결·입력·최신 원고 버전을 확인하세요.` : `${message(e)} 작업이 생성되었는지 아래에서 다시 확인하세요. 중복 요청을 막기 위해 재실행을 중지했습니다.`);
         unknownRequest.current = !rejected; setPublishUnknown(!rejected);
-        if (rejected && e.status === 409) void compareLatest();
+        if (e instanceof CoreError && e.status === 409) void compareLatest();
       }
     }
     finally { publishBusy.current = false; if (alive.current) setPublishing(false); }
@@ -202,14 +230,17 @@ export function DraftEditor({ client, draft, quality, suggestedTags, preferences
     <details className="tool-section"><summary>자동 검사와 작성 정보</summary><p>작성 모델: {draft.provider} · {draft.model || '모델 정보 없음'} / 프롬프트: {draft.prompt_version}</p>{quality ? <><p>생성 시 자동 검사 {quality.score}점 · {quality.char_count.toLocaleString()}자. 편집 이후 내용의 점수가 아닙니다.</p><ul>{quality.issues.map((issue, i) => <li key={i}>{issue}</li>)}</ul></> : <p>현재 원고에 연결된 자동 검사 결과가 제공되지 않았습니다.</p>}<p>자동 검사는 구조와 분량 등의 점검이며 사실성·상위 노출을 보증하지 않습니다.</p></details>
     <details className="tool-section" onToggle={e => setShowFacts(e.currentTarget.open)}><summary>이 원고의 근거 자료</summary>{!draft.fact_pack_id ? <p>연결된 근거 자료가 없습니다.</p> : <><p>근거 #{draft.fact_pack_id} · 작성에 사용한 버전 {draft.fact_pack_version ?? '미제공'}</p>{facts.isFetching && <p role="status">근거를 불러오는 중…</p>}{facts.error && <p role="alert">{message(facts.error)}</p>}{facts.data?.versions.filter(v => v.version === draft.fact_pack_version).map(v => <ul key={v.version}>{v.evidence.map(e => <li key={e.id}><strong>{e.label}</strong> · {e.selected ? '선택됨' : '미선택'}<p>{e.source_type} · {e.collected_at ?? '수집 시각 미제공'} · {e.freshness} {e.from_cache ? '· 저장된 자료' : ''}</p><pre className="article-preview">{typeof e.value === 'string' ? e.value : JSON.stringify(e.value, null, 2)}</pre>{external(e.source_url) && <a href={external(e.source_url)!} target="_blank" rel="noreferrer">원문 확인 ↗ 새 탭</a>}</li>)}</ul>)}</>}</details>
     <details className="tool-section"><summary>참고 사진 찾기</summary><p>사진을 검색하는 기능입니다. 이미지 생성·본문 자동 삽입은 하지 않습니다. 원본의 이용 조건을 확인하세요.</p><button disabled={imagesLoading} onClick={() => void findImages()}>{imagesLoading ? '검색 중…' : '참고 사진 검색'}</button>{imagesError && <p role="alert">{imagesError}</p>}{images && <><p>{images.rights_notice} {images.warning}</p><p>조회 상태: {images.status}</p><ul>{images.items?.map((item, i) => { const url = external(item.link); return <li key={i}>{url ? <a href={url} target="_blank" rel="noreferrer">{String(item.title || '원본 사진')} ↗ 새 탭</a> : '원본 주소 없음'}</li>; })}</ul></>}</details>
-    <details className="tool-section" open><summary>본문 이미지 · {assetRows.length}/3</summary><p>현재 원고 v{latest.version}에 고정되며 임시저장 때 네이버로 전달됩니다. 최소 3장이 필요합니다.</p>{assetRows.length < 3 && <div className="notice"><p>외부 사진을 복제하지 않고 앱이 주제용 안내 일러스트를 직접 만들어 첨부할 수 있습니다.</p><button className="primary" disabled={assetsLocked} onClick={() => void generateGuideAssets()}>{assetBusy ? '이미지 만드는 중…' : '앱이 안내 이미지 3장 만들기'}</button></div>}<label className="check-label"><input type="checkbox" checked={rightsApproved} disabled={assetsLocked} onChange={e => { if (!cannotMutate()) setRightsApproved(e.target.checked); }}/>내 파일을 추가할 경우: 직접 촬영했거나 사용할 권리가 있는 이미지입니다.</label><input type="file" accept="image/png,image/jpeg,image/webp" multiple disabled={!rightsApproved || assetsLocked || assetRows.length >= 10} onChange={e => { const files = [...(e.currentTarget.files ?? [])]; e.currentTarget.value = ''; if (files.length) void uploadAssets(files); }}/>{assetBusy && <p role="status">이미지 처리 중…</p>}{assets.isFetching && !assetBusy && <p role="status">이미지 목록 확인 중…</p>}{assets.error && <div role="alert"><p>이미지 목록을 확인하지 못해 변경과 임시저장을 막았습니다. {message(assets.error)}</p><button disabled={mutationLocked || assets.isFetching} onClick={() => void assets.refetch()}>이미지 목록 다시 확인</button></div>}{assetError && <p role="alert">{assetError}</p>}<ul>{assetRows.map(asset => <li key={asset.asset_id}>{asset.position + 1}. {asset.filename} · {Math.ceil(asset.byte_size / 1024)}KB <button disabled={assetsLocked} onClick={() => void removeAsset(asset.asset_id)}>삭제</button></li>)}</ul>{assetRows.length < 3 && <p className="notice">이미지가 {3 - assetRows.length}장 더 필요합니다.</p>}</details>
+    <details className="tool-section" open><summary>본문 이미지 · {assetRows.length}/3</summary><p>현재 원고 v{latest.version}에 고정되며 임시저장 때 네이버로 전달됩니다. 최소 3장이 필요합니다.</p>{assetRows.length < 3 && <div className="notice"><p>저장된 본문의 실제 문단을 발췌한 텍스트 카드를 만듭니다. 사진·AI 일러스트 생성이 아닙니다. 내용을 직접 확인하세요.</p><button className="primary" disabled={assetsLocked || dirty} onClick={() => void generateGuideAssets()}>{assetBusy ? '이미지 만드는 중…' : '본문 발췌 카드 3장 만들기'}</button></div>}<label className="check-label"><input type="checkbox" checked={rightsApproved} disabled={assetsLocked} onChange={e => { if (!cannotMutate()) setRightsApproved(e.target.checked); }}/>내 파일을 추가할 경우: 직접 촬영했거나 사용할 권리가 있는 이미지입니다.</label><input type="file" aria-label="본문 이미지 파일 추가" accept="image/png,image/jpeg,image/webp" multiple disabled={!rightsApproved || assetsLocked || assetRows.length >= 10} onChange={e => { const files = [...(e.currentTarget.files ?? [])]; e.currentTarget.value = ''; if (files.length) void uploadAssets(files); }}/>{assetBusy && <p role="status">이미지 처리 중…</p>}{assets.isFetching && !assetBusy && <p role="status">이미지 목록 확인 중…</p>}{assets.error && <div role="alert"><p>이미지 목록을 확인하지 못해 변경과 임시저장을 막았습니다. {message(assets.error)}</p><button disabled={mutationLocked || assets.isFetching} onClick={() => void assets.refetch()}>이미지 목록 다시 확인</button></div>}{assetError && <p role="alert">{assetError}</p>}<p className="muted">기존 이미지는 자동 교체하지 않습니다. 주제와 맞지 않으면 새 원고 버전에서 교체하세요. {dirty && '카드 생성 전 수정 내용을 저장하세요.'}</p><ul>{assetRows.map(asset => <li key={asset.asset_id}><DraftAssetPreview client={client} asset={asset} paragraph={latest.body.split(/\r?\n/).filter(p => p.replace(/[\s\u200b-\u200d\ufeff]/g, ''))[asset.anchor_after - 1]}/>{asset.position + 1}. {asset.filename} · {Math.ceil(asset.byte_size / 1024)}KB <button disabled={assetsLocked} onClick={() => void removeAsset(asset.asset_id)}>삭제</button></li>)}</ul>{assetRows.length < 3 && <p className="notice">이미지가 {3 - assetRows.length}장 더 필요합니다.</p>}</details>
     <details className="tool-section" open>
       <summary>네이버에 임시저장</summary>
-      <p>현재 Chrome의 네이버 로그인 상태를 사용합니다. 공개 발행은 하지 않습니다. {dirty && '먼저 수정 내용을 로컬에 저장하세요.'}</p>
+      <p>이 브라우저의 네이버 로그인 상태를 사용합니다. 공개 발행은 하지 않습니다. {dirty && '먼저 수정 내용을 로컬에 저장하세요.'}</p>
       {body.length < 3000 && <p className="notice">네이버 임시저장까지 진행하려면 본문이 {(3000 - body.length).toLocaleString()}자 더 필요합니다. 원고를 보완하고 로컬에 저장하세요.</p>}
       <p className="notice">확장 연결: {extensionReady ? '준비됨' : '확장 실행 또는 새로고침 필요'} · 본문 {body.length.toLocaleString()}/3,000자 · 이미지 {assetRows.length}/3</p>
+      {readiness.error && <p role="alert">{message(readiness.error)}</p>}
+      {extensionReady && <p className="muted">현재 브라우저 확장 빌드: {readiness.data?.connection.build_id} · 네이버 로그인은 저장 시 별도 확인합니다.</p>}
+      <button disabled={publishing || readiness.isFetching} onClick={() => void readiness.refetch()}>현재 브라우저 연결 다시 확인</button>
       <label htmlFor="blog-id">네이버 블로그 ID</label><input id="blog-id" value={blogId} disabled={mutationLocked} onChange={e => { if (!cannotMutate()) setBlogId(e.target.value); }} placeholder="예: sence4u" maxLength={100}/>
-      <label htmlFor="publish-tags">태그 · 쉼표 구분, 최대 10개</label><input id="publish-tags" value={tags} disabled={mutationLocked} onChange={e => { if (!cannotMutate()) setTags(e.target.value); }} maxLength={510}/>
+      <label htmlFor="publish-tags">태그 · 쉼표 구분, 최대 10개</label><input id="publish-tags" value={tags} disabled={mutationLocked} onChange={e => { if (!cannotMutate()) editTags(e.target.value); }} maxLength={510}/>
       {!validTags && <p role="alert">태그는 최대 10개, 각각 50자 이하여야 합니다.</p>}
       <button disabled={mutationLocked || assets.isPending || assets.isFetching || assets.isError || dirty || body.length < 3000 || assetRows.length < 3 || !extensionReady || !validTags || !/^[A-Za-z0-9_-]+$/.test(blogId)} onClick={() => void publish()}>{publishing ? '작업 요청 중…' : '네이버에 임시저장'}</button>
       <div className="notice"><button disabled={publishing || previousJob.isFetching} onClick={() => void refreshPreviousJob()}>기존 임시저장 작업 다시 확인</button>{previousJob.isFetching && <p role="status">이 원고의 최근 작업을 확인 중…</p>}{previousJob.error && <p role="alert">최근 작업을 확인하지 못해 새 요청을 막았습니다. {message(previousJob.error)}</p>}{!previousJob.isFetching && previousJob.data === null && <p>현재 조회된 작업 기록 없음</p>}{publishUnknown && <p>응답이 끊긴 요청의 생성 여부는 아직 확정할 수 없습니다. 새 작업이 확인되기 전에는 다시 요청하지 마세요.</p>}</div>

@@ -887,7 +887,7 @@ class DraftSummaryResponse(BaseModel):
     latest_version: int
     latest_version_at: str
     user_status: Literal["editing", "review_ready", "archived"]
-    latest_job_status: Literal["none", "pending", "draft_saved", "failed"]
+    latest_job_status: Literal["none", "pending", "waiting_extension", "running", "draft_saved", "verified_draft_saved", "failed", "unknown"]
     latest_job_id: int | None
     latest_job_stage: str | None
     latest_job_error: str | None
@@ -1003,6 +1003,7 @@ class PublishJobCreateRequest(BaseModel):
     tags: list[Annotated[str, Field(max_length=50)]] = Field(default_factory=list, max_length=10)
     expected_version: int | None = Field(default=None, ge=1)
     transport: Literal["dedicated_chrome_cdp", "current_chrome_extension"] = "dedicated_chrome_cdp"
+    target_worker_id: str | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("tags")
     @classmethod
@@ -1056,7 +1057,7 @@ class DraftAssetResponse(BaseModel):
 class PublishJobCommandResponse(BaseModel):
     attempt_id: str
     lease_owner: str
-    resume_stage: Literal["browser_attach", "reopen_verify"]
+    resume_stage: Literal["browser_attach", "upload_images", "input_tags", "reopen_verify"]
     asset_manifest_hash: str
     image_receipts: list[dict] = Field(default_factory=list)
     job_id: int
@@ -1089,6 +1090,8 @@ class PublisherHeartbeatRequest(BaseModel):
     extension_id: str = Field(min_length=1, max_length=100)
     version: str = Field(min_length=1, max_length=40)
     active_url: str = Field(default="", max_length=1000)
+    protocol_version: int = Field(default=0, ge=0, le=3)
+    build_id: str = Field(default="", max_length=100)
 
 
 @router.post("/drafts", status_code=201, response_model=DraftCreateResponse)
@@ -1393,6 +1396,23 @@ def delete_draft_asset(
         raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft asset not found"})
 
 
+@router.get("/drafts/{draft_id}/assets/{asset_id}/content")
+def draft_asset_content(
+    draft_id: int,
+    asset_id: int,
+    service: DraftAssetService = Depends(get_draft_asset_service),
+) -> FileResponse:
+    row = service.get_row(asset_id)
+    if row is None or row.draft_id != draft_id:
+        raise HTTPException(status_code=404, detail={"code": "not_found", "message": "draft asset not found"})
+    try:
+        row = service.verify_file(asset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "asset_invalid", "message": str(exc)}) from exc
+    return FileResponse(row.local_path, media_type=row.mime_type,
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
 @router.post(
     "/drafts/{draft_id}/publish-jobs",
     status_code=202,
@@ -1405,9 +1425,11 @@ def start_publish_job(
     service: PublishService = Depends(get_publish_service),
 ) -> dict:
     if request.transport == "current_chrome_extension":
-        readiness = service.readiness(deps.get_settings().publisher_cdp_url)
+        if not request.target_worker_id:
+            raise HTTPException(status_code=409, detail={"code": "browser_transport_unavailable", "message": "현재 브라우저의 확장 연결을 먼저 확인하세요."})
+        readiness = service.readiness(deps.get_settings().publisher_cdp_url, target_worker_id=request.target_worker_id)
         if not readiness["current_chrome_extension"]["ready"]:
-            raise HTTPException(status_code=409, detail={"code": "browser_transport_unavailable", "message": "현재 Chrome 확장이 연결되지 않았습니다."})
+            raise HTTPException(status_code=409, detail={"code": "browser_transport_unavailable", "message": "이 브라우저의 최신 확장 연결을 확인하세요. 다른 브라우저 연결로 실행하지 않습니다."})
     try:
         task = service.prepare(
             draft_id,
@@ -1416,6 +1438,7 @@ def start_publish_job(
             cdp_url=deps.get_settings().publisher_cdp_url,
             expected_version=request.expected_version,
             transport=request.transport,
+            target_worker_id=request.target_worker_id,
         )
     except PublishPreconditionError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
@@ -1544,5 +1567,5 @@ def publisher_extension_heartbeat(
 
 
 @router.get("/publisher/readiness")
-def publisher_readiness(service: PublishService = Depends(get_publish_service)) -> dict:
-    return service.readiness(deps.get_settings().publisher_cdp_url)
+def publisher_readiness(service: PublishService = Depends(get_publish_service), target_worker_id: str | None = Query(default=None, min_length=1, max_length=100)) -> dict:
+    return service.readiness(deps.get_settings().publisher_cdp_url, target_worker_id=target_worker_id)

@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { MSG_BROWSER_CONNECTION } from '@ncos/contracts';
 import { MSG_RUN_PUBLISH_JOB, type PublisherReply } from '~/lib/messages';
 
 const REQUEST_SOURCE = 'naver-content-os-web';
@@ -9,8 +10,18 @@ export default defineContentScript({
   main() {
     window.addEventListener('message', (event) => {
       if (event.source !== window || event.origin !== window.location.origin) return;
-      const data = event.data as { source?: string; type?: string; jobId?: unknown };
-      if (data?.source !== REQUEST_SOURCE || data.type !== MSG_RUN_PUBLISH_JOB) return;
+      const data = event.data as { source?: string; type?: string; jobId?: unknown; requestId?: unknown };
+      if (data?.source !== REQUEST_SOURCE) return;
+      if (data.type === MSG_BROWSER_CONNECTION) {
+        if (typeof data.requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(data.requestId)) return;
+        void browser.runtime.sendMessage({ type: MSG_BROWSER_CONNECTION }).then(reply => {
+          window.postMessage({ source: RESPONSE_SOURCE, type: data.type, requestId: data.requestId, reply }, window.location.origin);
+        }).catch(() => {
+          window.postMessage({ source: RESPONSE_SOURCE, type: data.type, requestId: data.requestId, reply: { ok: false, detail: '확장 연결을 확인하세요.' } }, window.location.origin);
+        });
+        return;
+      }
+      if (data.type !== MSG_RUN_PUBLISH_JOB) return;
       const jobId = Number(data.jobId);
       if (!Number.isInteger(jobId) || jobId < 1) return;
       void browser.runtime.sendMessage({ type: MSG_RUN_PUBLISH_JOB, jobId })

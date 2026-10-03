@@ -8,7 +8,8 @@ const mocks = vi.hoisted(() => ({
     publisherHeartbeat: vi.fn(), recordPublishEvent: vi.fn(),
   },
   browser: {
-    runtime: { id: 'test-extension', getManifest: vi.fn(() => ({ version: 'test' })), onMessage: { addListener: vi.fn() } },
+    runtime: { id: 'test-extension', getManifest: vi.fn(() => ({ version: 'test', version_name: 'test-build' })), onMessage: { addListener: vi.fn() } },
+    debugger: { attach: vi.fn() },
     storage: { local: { get: vi.fn(async () => ({ 'ncos-publisher-worker-id': 'worker' })), set: vi.fn() } },
     sidePanel: { setPanelBehavior: vi.fn() },
     tabs: { query: vi.fn(), get: vi.fn(), update: vi.fn(), create: vi.fn(), remove: vi.fn() },
@@ -42,8 +43,8 @@ async function start(): Promise<void> {
   listener = mocks.browser.runtime.onMessage.addListener.mock.calls[0][0];
   await flush();
 }
-function run(jobId = 1): Promise<Record<string, unknown>> {
-  return new Promise(resolve => listener({ type: 'NCOS_RUN_PUBLISH_JOB', jobId }, {}, reply => resolve(reply as Record<string, unknown>)));
+function run(jobId = 1, sender: unknown = {}): Promise<Record<string, unknown>> {
+  return new Promise(resolve => listener({ type: 'NCOS_RUN_PUBLISH_JOB', jobId }, sender, reply => resolve(reply as Record<string, unknown>)));
 }
 
 beforeEach(() => {
@@ -68,6 +69,31 @@ beforeEach(() => {
 afterEach(() => { cleanup?.(); cleanup = undefined; vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('background command / attempt contract', () => {
+  it('selects the initiating app window rather than another window with the same blog', async () => {
+    mocks.browser.tabs.query.mockResolvedValue([
+      { id: 11, windowId: 100, url: 'https://blog.naver.com/sence4u/postwrite' },
+      { id: 10, windowId: 200, url: 'https://blog.naver.com/sence4u/postwrite' },
+    ]);
+    await start();
+    expect(mocks.client.nextPublishCommand).not.toHaveBeenCalled();
+    expect((await settle(run(1, { tab: { windowId: 200 } }))).ok).toBe(true);
+    expect(mocks.browser.tabs.update).toHaveBeenCalledWith(10, { active: true });
+    expect(mocks.browser.tabs.update).not.toHaveBeenCalledWith(11, expect.anything());
+    expect(mocks.browser.tabs.create).toHaveBeenCalledWith({ url: 'https://blog.naver.com/sence4u/postwrite', active: true, windowId: 200 });
+  });
+
+  it('rejects duplicate editors without a unique window target before any editor input', async () => {
+    mocks.browser.tabs.query.mockResolvedValue([
+      { id: 10, windowId: 100, url: 'https://blog.naver.com/sence4u/postwrite' },
+      { id: 11, windowId: 100, url: 'https://blog.naver.com/sence4u/postwrite' },
+    ]);
+    await start();
+    expect(await settle(run(1, { tab: { windowId: 100 } }))).toMatchObject({ ok: false, error_code: 'editor_tab_ambiguous' });
+    expect(mocks.execute).not.toHaveBeenCalled();
+    expect(mocks.browser.tabs.update).not.toHaveBeenCalled();
+    expect(mocks.client.nextPublishCommand).not.toHaveBeenCalled();
+  });
+
   it('uses prefetched resume checkpoint despite the job row already being running/browser_attach', async () => {
     command.resume_stage = 'reopen_verify';
     mocks.client.nextPublishCommand.mockResolvedValueOnce(command);
@@ -77,7 +103,7 @@ describe('background command / attempt contract', () => {
     expect(mocks.execute).not.toHaveBeenCalled();
     expect(mocks.client.getPublishCommand).not.toHaveBeenCalled();
     expect(mocks.browser.tabs.update).not.toHaveBeenCalled();
-    expect(mocks.browser.tabs.create).toHaveBeenCalledWith({ url: 'https://blog.naver.com/sence4u/postwrite', active: false });
+    expect(mocks.browser.tabs.create).toHaveBeenCalledWith({ url: 'https://blog.naver.com/sence4u/postwrite', active: true });
     expect(mocks.client.recordPublishEvent.mock.calls.map(c => c[1].stage)).toEqual(['reopen_verify', 'reopen_verify']);
     for (const [, event] of mocks.client.recordPublishEvent.mock.calls) expect(event).toMatchObject({ attempt_id: command.attempt_id, lease_owner: command.lease_owner });
   });
@@ -120,5 +146,27 @@ describe('background command / attempt contract', () => {
     await start(); const first = run(); const second = run(); for (let i = 0; i < 30 && !release; i++) await flush(); expect(release).toBeDefined(); release!();
     expect((await settle(first)).ok).toBe(true); expect((await settle(second)).ok).toBe(true);
     expect(mocks.execute).toHaveBeenCalledTimes(1); expect(mocks.client.getPublishCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports this browser identity and build without exposing its token', async () => {
+    await start();
+    const result = await new Promise(resolve => listener({ type: 'NCOS_BROWSER_CONNECTION' }, { url: 'http://127.0.0.1:3719/app/write' }, resolve));
+    expect(result).toEqual({ ok: true, worker_id: 'test-extension:worker', protocol_version: 3, build_id: 'test-build', debugger_available: true });
+    expect(JSON.stringify(result)).not.toContain('fixture-token');
+    expect(mocks.client.publisherHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ extension_id: 'test-extension:worker', protocol_version: 3, build_id: 'test-build' }));
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['https://evil.invalid/app/write', 'http://127.0.0.1:3720/app/write', 'http://127.0.0.1:3719/not-the-app', 'chrome-extension://another-extension/panel.html'])('rejects connection diagnostics from %s', async url => {
+    await start();
+    const result = await new Promise(resolve => listener({ type: 'NCOS_BROWSER_CONNECTION' }, { url }, resolve));
+    expect(result).toMatchObject({ ok: false, worker_id: '' });
+  });
+
+  it('keeps web diagnostics available when the optional side panel fails', async () => {
+    mocks.browser.sidePanel.setPanelBehavior.mockImplementationOnce(() => { throw new Error('unsupported API'); });
+    await start();
+    const result = await new Promise(resolve => listener({ type: 'NCOS_BROWSER_CONNECTION' }, { url: 'chrome-extension://test-extension/sidepanel.html' }, resolve));
+    expect(result).toMatchObject({ ok: true });
   });
 });

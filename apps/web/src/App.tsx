@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CoreClient } from '@ncos/core-client';
-import { Writer, DraftLibrary, TodayWork, PerformanceWorkspace, type PerformanceView, type ImprovementInput, type WritingPreferences, KeywordWorkspace, type KeywordView } from '@ncos/workbench';
+import { Writer, readDraftTags, DraftLibrary, TodayWork, PerformanceWorkspace, type PerformanceView, type ImprovementInput, type WritingPreferences, KeywordWorkspace, type KeywordView } from '@ncos/workbench';
 import { AppearancePanel } from './AppearancePanel';
 import { useTheme } from './theme';
 import { SettingsPanel } from './SettingsPanel';
@@ -47,7 +47,7 @@ export default function App() {
   const [preferences, setPreferences] = useState<WritingPreferences>(() => {
     try {
       const value = JSON.parse(localStorage.getItem('ncos-web-preferences') ?? '{}');
-      return { blogId: typeof value.blogId === 'string' ? value.blogId : '', tags: typeof value.tags === 'string' ? value.tags : '', allowSensitiveUnknown: typeof value.allowSensitiveUnknown === 'boolean' ? value.allowSensitiveUnknown : true };
+      return { draftTags: readDraftTags(value.draftTags), blogId: typeof value.blogId === 'string' ? value.blogId : '', tags: typeof value.tags === 'string' ? value.tags : '', allowSensitiveUnknown: typeof value.allowSensitiveUnknown === 'boolean' ? value.allowSensitiveUnknown : true };
     } catch { return { blogId: '', tags: '', allowSensitiveUnknown: true }; }
   });
   useEffect(() => {
